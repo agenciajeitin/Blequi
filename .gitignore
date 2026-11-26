@@ -1,0 +1,10 @@
+node_modules
+dist
+.DS_Store
+*.local
+.env
+.env.*
+!.env.example
+estado-mundo/agency-state.json
+
+*.tsbuildinfo

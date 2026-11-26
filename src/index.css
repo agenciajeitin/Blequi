@@ -1,0 +1,213 @@
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "Nunito", "Comfortaa", system-ui, -apple-system, sans-serif;
+  --font-display: "Fredoka", "Nunito", system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, monospace;
+}
+
+:root {
+  --cw-navy: #3b3777;
+  --cw-navy-deep: #2c285e;
+  --cw-mint: #02c6a7;
+  --cw-mint-soft: #86e0cf;
+  --cw-coral: #f2676f;
+  --cw-coral-soft: #f8b3b7;
+  --cw-peach: #ffdbc9;
+  --cw-yellow: #f6d35f;
+  --cw-sky: #00b8ff;
+  --cw-ocean: #52b6e6;
+
+  --cursor-auto: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='28' height='28' viewBox='0 0 32 32' fill='none'%3E%3Cpath fill='%233B3777' d='M17.1 30c-.9 0-1.7-.5-2.1-1.3l-2.9-5.7-3.1 1.5a1.8 1.8 0 0 1-2.6-1.7l.8-18.3a1.8 1.8 0 0 1 2.8-1.4l15.1 10.4c.5.4.8 1 .8 1.6 0 .7-.4 1.2-1 1.5l-3 1.5 2.8 5.7c.3.6.3 1.2.1 1.8-.2.6-.6 1.1-1.2 1.4l-5.5 2.7c-.3.2-.7.3-1 .3Z'/%3E%3Cpath fill='%23fff' d='M12.5 21.2c.3 0 .5.1.7.4l3.2 6.4c.2.4.7.6 1.2.4l5.5-2.7c.2-.1.4-.3.4-.5.1-.2.1-.5 0-.7l-3.2-6.4a.8.8 0 0 1 .3-1l3.7-1.9c.1-.1.2-.2.2-.3 0-.1 0-.2-.1-.3L9.2 4.3a.3.3 0 0 0-.3 0c-.1 0-.2.1-.2.3l-.8 18.3c0 .1.1.2.1.3.1 0 .2.1.3 0l3.7-1.9c.1-.1.3-.1.5-.1Z'/%3E%3C/svg%3E") 6 2, auto;
+  --cursor-pointer: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='28' height='28' viewBox='0 0 32 32' fill='none'%3E%3Ccircle cx='16' cy='16' r='10' fill='%23ffffff' stroke='%233B3777' stroke-width='3'/%3E%3Ccircle cx='16' cy='16' r='3.5' fill='%2302C6A7'/%3E%3C/svg%3E") 14 14, pointer;
+}
+
+html,
+body,
+#root {
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
+  background-color: #00b8ff;
+  color: var(--cw-navy);
+  font-family: var(--font-sans);
+  cursor: var(--cursor-auto);
+  user-select: none;
+}
+
+button,
+a,
+[role="button"] {
+  cursor: var(--cursor-pointer);
+}
+
+input,
+textarea,
+select {
+  user-select: text;
+}
+
+/* Coastal World Tactile 3D Pill CTA Button */
+.cw-cta {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 9999px;
+  font-weight: 800;
+  letter-spacing: 0.02em;
+  transition: transform 0.25s cubic-bezier(0.23, 1, 0.32, 1), box-shadow 0.25s cubic-bezier(0.23, 1, 0.32, 1);
+}
+
+.cw-cta-white {
+  background: #d7e3ee;
+  padding-bottom: 5px;
+  box-shadow: 0 12px 28px rgba(32, 74, 114, 0.22);
+}
+.cw-cta-white > .cw-cta-inner {
+  background: #ffffff;
+  color: #3b3777;
+  border-radius: 9999px;
+  transform: translateY(-2px);
+  transition: transform 0.28s cubic-bezier(0.23, 1, 0.32, 1);
+}
+.cw-cta-white:hover > .cw-cta-inner {
+  transform: translateY(-5px);
+}
+.cw-cta-white:active > .cw-cta-inner {
+  transform: translateY(1px);
+}
+
+.cw-cta-mint {
+  background: #019f86;
+  padding-bottom: 4px;
+  box-shadow: 0 10px 24px rgba(2, 198, 167, 0.32);
+}
+.cw-cta-mint > .cw-cta-inner {
+  background: linear-gradient(180deg, #16d9ba 0%, #02c6a7 100%);
+  color: #ffffff;
+  border-radius: 9999px;
+  transform: translateY(-2px);
+  transition: transform 0.25s cubic-bezier(0.23, 1, 0.32, 1);
+}
+.cw-cta-mint:hover > .cw-cta-inner {
+  transform: translateY(-4px);
+}
+.cw-cta-mint:active > .cw-cta-inner {
+  transform: translateY(1px);
+}
+
+.cw-cta-coral {
+  background: #d94a53;
+  padding-bottom: 4px;
+  box-shadow: 0 10px 24px rgba(242, 103, 111, 0.3);
+}
+.cw-cta-coral > .cw-cta-inner {
+  background: linear-gradient(180deg, #ff7b82 0%, #f2676f 100%);
+  color: #ffffff;
+  border-radius: 9999px;
+  transform: translateY(-2px);
+  transition: transform 0.25s cubic-bezier(0.23, 1, 0.32, 1);
+}
+.cw-cta-coral:hover > .cw-cta-inner {
+  transform: translateY(-4px);
+}
+.cw-cta-coral:active > .cw-cta-inner {
+  transform: translateY(1px);
+}
+
+/* Coastal World Top-Right Bordered Circle Buttons */
+.cw-circle-btn {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 52px;
+  height: 52px;
+  border-radius: 9999px;
+  border: 3.5px solid #ffffff;
+  background: rgba(255, 255, 255, 0.14);
+  color: #ffffff;
+  backdrop-filter: blur(4px);
+  transition: transform 0.28s cubic-bezier(0.23, 1, 0.32, 1), background-color 0.25s ease, color 0.25s ease, box-shadow 0.25s ease;
+  box-shadow: 0 6px 18px rgba(34, 62, 102, 0.16);
+}
+.cw-circle-btn:hover {
+  background: #ffffff;
+  color: #3b3777;
+  transform: scale(1.07);
+}
+.cw-circle-btn:active {
+  transform: scale(0.96);
+}
+
+/* Customizer Beveled Action Orb */
+.cw-action-orb {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 76px;
+  height: 76px;
+  border-radius: 9999px;
+  background: radial-gradient(circle at 50% 45%, #ffffff 78%, #dce4ee 100%);
+  box-shadow: 0 12px 28px rgba(35, 52, 88, 0.24);
+  transition: transform 0.28s cubic-bezier(0.19, 1.4, 0.3, 1);
+}
+.cw-action-orb:hover {
+  transform: translateY(-4px) scale(1.06);
+}
+.cw-action-orb:active {
+  transform: scale(0.95);
+}
+
+/* Coastal World Chunky Display Wordmark */
+.cw-wordmark {
+  font-family: var(--font-display);
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  text-transform: uppercase;
+  text-shadow: 0 8px 26px rgba(17, 102, 158, 0.28);
+}
+
+/* Tutorial Arrow Key Pulse */
+@keyframes cwKeyPulse {
+  0%, 35%, 100% { transform: scale(1); }
+  12% { transform: scale(0.84); }
+}
+.cw-keycap {
+  animation: cwKeyPulse 2.4s ease-in-out infinite;
+}
+
+@keyframes cwFloatSlow {
+  0%, 100% { transform: translateY(0px); }
+  50% { transform: translateY(-5px); }
+}
+.cw-float-slow {
+  animation: cwFloatSlow 3.6s ease-in-out infinite;
+}
+
+@keyframes cwPopIn {
+  0% { opacity: 0; transform: translateY(18px) scale(0.94); }
+  100% { opacity: 1; transform: translateY(0) scale(1); }
+}
+.cw-pop-in {
+  animation: cwPopIn 0.38s cubic-bezier(0.19, 1.35, 0.32, 1) forwards;
+}
+
+/* Clean bright scrollbar */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: rgba(59, 55, 119, 0.18);
+  border-radius: 9999px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(59, 55, 119, 0.35);
+}
