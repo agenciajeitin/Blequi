@@ -44,6 +44,16 @@ function clamp(n: number, min: number, max: number) {
   return Math.max(min, Math.min(max, n))
 }
 
+/** Aceita apenas cores hex válidas (#rgb ou #rrggbb) vindas do modelo */
+function isHexColor(value: unknown): value is string {
+  return typeof value === 'string' && /^#(?:[0-9a-f]{3}|[0-9a-f]{6})$/i.test(value.trim())
+}
+
+function finiteOrUndefined(value: unknown): number | undefined {
+  const n = typeof value === 'string' ? Number(value) : value
+  return typeof n === 'number' && Number.isFinite(n) ? n : undefined
+}
+
 function pickSafePropPosition(
   state: SharedWorldState,
   placement: 'studio' | 'island',
@@ -246,7 +256,7 @@ function executeAgentTool(
     const kind: WorldPropKind = VALID_PROP_KINDS.includes(rawKind) ? rawKind : 'warm_lamp'
     const catalog = PROP_CATALOG[kind]
     const placement = args.placement === 'island' ? 'island' : 'studio'
-    const position = pickSafePropPosition(world, placement, agent.zone, args.x, args.z)
+    const position = pickSafePropPosition(world, placement, agent.zone, finiteOrUndefined(args.x), finiteOrUndefined(args.z))
     const approved = world.allowSelfBuildWithoutApproval && placement === 'studio'
 
     const prop: WorldCreationProp = {
@@ -260,7 +270,7 @@ function executeAgentTool(
       zone: agent.zone,
       position,
       rotationY: Number(((world.props.length * 0.7) % (Math.PI * 2)).toFixed(2)),
-      color: typeof args.color === 'string' && args.color.startsWith('#') ? args.color : catalog.defaultColor,
+      color: isHexColor(args.color) ? args.color.trim() : catalog.defaultColor,
       scale: 1,
       approved,
       wellbeingBonus: catalog.wellbeingBonus,
@@ -309,14 +319,14 @@ function executeAgentTool(
     if (typeof args.tagline === 'string' && args.tagline.trim()) {
       agent.studioTheme.tagline = args.tagline.trim().slice(0, 80)
     }
-    if (typeof args.facadeColor === 'string' && args.facadeColor.startsWith('#')) {
+    if (isHexColor(args.facadeColor)) {
       agent.studioTheme.facadeColor = args.facadeColor
     }
-    if (typeof args.roofAccent === 'string' && args.roofAccent.startsWith('#')) {
+    if (isHexColor(args.roofAccent)) {
       agent.studioTheme.roofAccent = args.roofAccent
       agent.accentColor = args.roofAccent
     }
-    if (typeof args.interiorGlow === 'string' && args.interiorGlow.startsWith('#')) {
+    if (isHexColor(args.interiorGlow)) {
       agent.studioTheme.interiorGlow = args.interiorGlow
     }
     if (args.floorTone === 'oak' || args.floorTone === 'sand' || args.floorTone === 'slate') {
@@ -359,7 +369,7 @@ function executeAgentTool(
       zone,
       provider,
       accentColor:
-        typeof args.accentColor === 'string' && args.accentColor.startsWith('#')
+        isHexColor(args.accentColor)
           ? args.accentColor
           : STUDIO_ZONES[zone].color,
       skills: Array.isArray(args.skills) ? args.skills.map(String).slice(0, 6) : ['Diorama 3D', 'WebGL'],
@@ -397,7 +407,9 @@ function executeAgentTool(
 
     const blueprintDir = path.join(rootDir, 'projetos', 'blueprints')
     fs.mkdirSync(blueprintDir, { recursive: true })
-    const filePath = path.join(blueprintDir, `${slug}.md`)
+    // Não sobrescreve blueprints anteriores com o mesmo título
+    const fileSlug = fs.existsSync(path.join(blueprintDir, `${slug}.md`)) ? `${slug}-${Date.now()}` : slug
+    const filePath = path.join(blueprintDir, `${fileSlug}.md`)
     const md = `# ${title}\n\n- **Autor(a) na Blequi:** ${agent.name} (${agent.role})\n- **Data:** ${new Date().toLocaleString('pt-BR')}\n- **Resumo:** ${String(args.summary || '')}\n\n---\n\n${String(args.detailsMarkdown || '')}\n`
     fs.writeFileSync(filePath, md, 'utf-8')
 
@@ -407,16 +419,16 @@ function executeAgentTool(
     agent.logs.unshift({
       id: `log-${Date.now()}-${Math.random().toString(36).slice(2, 5)}`,
       time: nowTimeLabel(),
-      message: `Salvou blueprint 3D em projetos/blueprints/${slug}.md`,
+      message: `Salvou blueprint 3D em projetos/blueprints/${fileSlug}.md`,
       kind: 'creation',
     })
 
     return {
       summaryText: JSON.stringify({
         ok: true,
-        file: `projetos/blueprints/${slug}.md`,
+        file: `projetos/blueprints/${fileSlug}.md`,
       }),
-      actionBadge: `Salvou blueprint: ${slug}.md`,
+      actionBadge: `Salvou blueprint: ${fileSlug}.md`,
     }
   }
 
@@ -567,7 +579,12 @@ export async function runAgentConversationTurn(params: {
       rounds++
     }
 
-    agent.lastInteractionId = interaction.id
+    // Se o limite de rodadas acabou com chamadas de ferramenta ainda pendentes, não encadeia
+    // a próxima conversa nessa interação (o Gemini rejeitaria por falta de function_result).
+    const pendingCalls = (Array.isArray(interaction.steps) ? interaction.steps : []).some(
+      (step) => step.type === 'function_call'
+    )
+    agent.lastInteractionId = pendingCalls ? undefined : interaction.id
     const replyText =
       interaction.output_text?.trim() ||
       (actions.length > 0
@@ -581,6 +598,15 @@ export async function runAgentConversationTurn(params: {
       agent.lastInteractionId = undefined
     }
     const errMsg = err?.message ? String(err.message) : 'Erro desconhecido na Gemini API'
+    console.warn(`[blequi] Gemini falhou para ${agent.name}: ${errMsg}`)
+    if (actions.length > 0) {
+      // As ferramentas já rodaram antes da falha: não constrói um segundo objeto na simulação offline
+      return {
+        replyText: `Prontinho, ${ceoName}! Consegui fazer ${actions.join(', ')}, mas a conexão com o Gemini caiu antes de eu terminar de responder.`,
+        actions,
+        usedLiveGemini: true,
+      }
+    }
     const fallback = runOfflineSimulationTurn(agent, world, userMessage, ceoName, rootDir, forceSelfBuild)
     return {
       replyText: `${fallback.replyText}\n\n(Aviso técnico do servidor local: a chamada ao Gemini retornou "${errMsg.slice(0, 140)}".)`,

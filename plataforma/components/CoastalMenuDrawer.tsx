@@ -40,7 +40,7 @@ export function CoastalMenuDrawer() {
   const setMenuOpen = useAgencyStore((s) => s.setMenuOpen)
   const setTimeOfDay = useAgencyStore((s) => s.setTimeOfDay)
   const returnToIsland = useAgencyStore((s) => s.returnToIsland)
-  const enterStudioZone = useAgencyStore((s) => s.enterStudioZone)
+  const setStudioPickerOpen = useAgencyStore((s) => s.setStudioPickerOpen)
   const setSettingsOpen = useAgencyStore((s) => s.setSettingsOpen)
   const setCreateModalOpen = useAgencyStore((s) => s.setCreateModalOpen)
   const openEntryHud = useAgencyStore((s) => s.openEntryHud)
@@ -136,7 +136,7 @@ export function CoastalMenuDrawer() {
                 type="button"
                 onClick={() => {
                   coastalAudio.playPop(580, 0.06)
-                  enterStudioZone(activeStudioZone)
+                  setStudioPickerOpen(true)
                 }}
                 className={`flex items-center justify-center gap-1.5 rounded-full py-2.5 text-xs font-extrabold transition-all ${
                   worldView === 'studio'

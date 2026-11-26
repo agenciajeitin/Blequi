@@ -7,6 +7,7 @@ import { ROOM_SCALES } from '@funcionarios/providers'
 import type { RoomScaleId } from '@funcionarios/types'
 import { useAgencyStore } from '@plataforma/store/useAgencyStore'
 import { createCoastalSkyMaterial, getSkyPalette } from './shaders/coastalShaders'
+import { FloatingLights } from './effects/FloatingLights'
 import { CoastalBlequiIsland } from './island/CoastalBlequiIsland'
 import { CoastalStudioInterior } from './zones/CoastalStudioInterior'
 import { WalkableStudioController } from './zones/WalkableStudioController'
@@ -99,6 +100,7 @@ function SceneContent({ onFpsSample }: { onFpsSample: (fps: number) => void }) {
   const isSettingsOpen = useAgencyStore((s) => s.isSettingsOpen)
   const isCreateModalOpen = useAgencyStore((s) => s.isCreateModalOpen)
   const isCeoLoginOpen = useAgencyStore((s) => s.isCeoLoginOpen)
+  const isStudioPickerOpen = useAgencyStore((s) => s.isStudioPickerOpen)
   const playerAvatar = useAgencyStore((s) => s.playerAvatar)
   const teleportTarget = useAgencyStore((s) => s.teleportTarget)
   const cameraResetTick = useAgencyStore((s) => s.cameraResetTick)
@@ -134,7 +136,11 @@ function SceneContent({ onFpsSample }: { onFpsSample: (fps: number) => void }) {
   const studioOwner = studioAgents[0]
 
   const isModalOpen =
-    isSettingsOpen || isCreateModalOpen || isCeoLoginOpen || Boolean(selectedAgentId)
+    isSettingsOpen ||
+    isCreateModalOpen ||
+    isCeoLoginOpen ||
+    isStudioPickerOpen ||
+    Boolean(selectedAgentId)
   const useWalkPerspectiveInStudio = studioCameraMode === 'walk' || isCustomizerOpen
 
   return (
@@ -164,6 +170,9 @@ function SceneContent({ onFpsSample }: { onFpsSample: (fps: number) => void }) {
             shadow-normalBias={0.035}
           />
           <directionalLight position={[-24, 18, -16]} intensity={0.42} color="#bfe8ff" />
+
+          {/* Luzes decorativas flutuando sobre a ilha (precisa estar dentro do Canvas) */}
+          <FloatingLights />
 
           <CoastalBlequiIsland
             agents={agents}

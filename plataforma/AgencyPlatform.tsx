@@ -8,6 +8,7 @@ import { CoastalMenuDrawer } from './components/CoastalMenuDrawer'
 import { AgentInspector } from './components/AgentInspector'
 import { CeoSettingsModal } from './components/CeoSettingsModal'
 import { CreateAgentModal } from './components/CreateAgentModal'
+import { StudioPickerHud } from './components/StudioPickerHud'
 
 export function AgencyPlatform() {
   const introStage = useAgencyStore((s) => s.introStage)
@@ -31,6 +32,7 @@ export function AgencyPlatform() {
           <AgentInspector />
           <CreateAgentModal />
           <CeoSettingsModal />
+          <StudioPickerHud />
 
           {/* Crisp Coastal World Floating White Toast */}
           {toastMessage && (

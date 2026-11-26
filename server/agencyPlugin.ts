@@ -86,22 +86,71 @@ function sendJson(res: ServerResponse, status: number, payload: unknown) {
   res.end(JSON.stringify(payload))
 }
 
-function loadOrCreateState(stateFilePath: string): SharedWorldState {
+/**
+ * Escrita atômica: grava num arquivo temporário e renomeia por cima.
+ * Evita que um crash/queda de energia (ou o OneDrive travando o arquivo) deixe o JSON pela metade.
+ */
+function writeStateFileAtomic(stateFilePath: string, state: SharedWorldState) {
+  fs.mkdirSync(path.dirname(stateFilePath), { recursive: true })
+  const tmpPath = `${stateFilePath}.tmp`
+  fs.writeFileSync(tmpPath, JSON.stringify(state, null, 2), 'utf-8')
   try {
-    if (fs.existsSync(stateFilePath)) {
-      const parsed = JSON.parse(fs.readFileSync(stateFilePath, 'utf-8')) as SharedWorldState
-      if (parsed && Array.isArray(parsed.agents) && Array.isArray(parsed.props)) {
-        return parsed
-      }
-    }
+    fs.renameSync(tmpPath, stateFilePath)
   } catch {
-    // Fall back to clean initial state if file is malformed
+    // Windows/OneDrive pode bloquear o rename momentaneamente: cai para escrita direta
+    fs.writeFileSync(stateFilePath, JSON.stringify(state, null, 2), 'utf-8')
+    try {
+      fs.unlinkSync(tmpPath)
+    } catch {
+      /* ignore */
+    }
+  }
+}
+
+/** Garante campos obrigatórios em estados salvos por versões antigas do app */
+function normalizeState(parsed: SharedWorldState): SharedWorldState {
+  const initial = createInitialWorldState()
+  return {
+    ...initial,
+    ...parsed,
+    agents: Array.isArray(parsed.agents) ? parsed.agents : initial.agents,
+    props: Array.isArray(parsed.props) ? parsed.props : initial.props,
+    proposals: Array.isArray(parsed.proposals) ? parsed.proposals : [],
+    onlineCeos: Array.isArray(parsed.onlineCeos) ? parsed.onlineCeos : [],
+    activeStudioZone: parsed.activeStudioZone in STUDIO_ZONES ? parsed.activeStudioZone : initial.activeStudioZone,
+    roomScale: parsed.roomScale in ROOM_SCALES ? parsed.roomScale : initial.roomScale,
+  }
+}
+
+function loadOrCreateState(stateFilePath: string): SharedWorldState {
+  if (fs.existsSync(stateFilePath)) {
+    try {
+      const parsed = JSON.parse(fs.readFileSync(stateFilePath, 'utf-8')) as SharedWorldState
+      if (parsed && Array.isArray(parsed.agents)) {
+        return normalizeState(parsed)
+      }
+    } catch {
+      // segue para o backup abaixo
+    }
+    // Nunca apaga o progresso: guarda uma cópia do arquivo corrompido antes de recriar
+    const backupPath = stateFilePath.replace(/\.json$/, `.corrompido-${Date.now()}.json`)
+    try {
+      fs.copyFileSync(stateFilePath, backupPath)
+      console.warn(`[blequi] agency-state.json inválido; backup salvo em ${backupPath}`)
+    } catch {
+      /* ignore */
+    }
   }
   const initial = createInitialWorldState()
-  fs.mkdirSync(path.dirname(stateFilePath), { recursive: true })
-  fs.writeFileSync(stateFilePath, JSON.stringify(initial, null, 2), 'utf-8')
+  writeStateFileAtomic(stateFilePath, initial)
   return initial
 }
+
+function sanitizeEnvValue(value: string) {
+  return value.replace(/[\r\n]/g, '').trim()
+}
+
+const VALID_AGENT_STATUSES: AgentStatus[] = ['working', 'thinking', 'reviewing', 'idle', 'vacant']
 
 export function blequiAgencyServerPlugin(): Plugin {
   return {
@@ -116,11 +165,16 @@ export function blequiAgencyServerPlugin(): Plugin {
         worldState.version = (worldState.version || 0) + 1
         worldState.updatedAt = new Date().toISOString()
         worldState.comfortScore = recalcComfortScore(worldState)
-        fs.mkdirSync(path.dirname(stateFilePath), { recursive: true })
-        fs.writeFileSync(stateFilePath, JSON.stringify(worldState, null, 2), 'utf-8')
+        writeStateFileAtomic(stateFilePath, worldState)
+        broadcast(`event: state\ndata: ${JSON.stringify(worldState)}\n\n`)
+      }
 
-        const payload = `event: state\ndata: ${JSON.stringify(worldState)}\n\n`
+      const broadcast = (payload: string) => {
         for (const client of sseClients) {
+          if (client.destroyed || client.writableEnded) {
+            sseClients.delete(client)
+            continue
+          }
           try {
             client.write(payload)
           } catch {
@@ -266,18 +320,11 @@ export function blequiAgencyServerPlugin(): Plugin {
             entry.lastSeenAt = new Date().toISOString()
 
             // Ultra-fast in-memory SSE broadcast (zero disk I/O lag for smooth 2-Co-CEO walking!)
-            const movePayload = `event: ceo-move\ndata: ${JSON.stringify(worldState.onlineCeos)}\n\n`
-            for (const client of sseClients) {
-              try {
-                client.write(movePayload)
-              } catch {
-                sseClients.delete(client)
-              }
-            }
+            broadcast(`event: ceo-move\ndata: ${JSON.stringify(worldState.onlineCeos)}\n\n`)
             return sendJson(res, 200, { ok: true })
           }
 
-          if ((pathname === '/api/agency/presence' || pathname === '/api/agency/ceo-move') && method === 'POST') {
+          if (pathname === '/api/agency/presence' && method === 'POST') {
             const body = await readJsonBody(req)
             prunePresence()
             const slot: 'ceo-1' | 'ceo-2' = body.ceoSlot === 'ceo-2' ? 'ceo-2' : 'ceo-1'
@@ -320,24 +367,17 @@ export function blequiAgencyServerPlugin(): Plugin {
             }
 
             // Broadcast lightweight live Co-CEO movement frame without disk I/O
-            const movePayload = `event: ceo-move\ndata: ${JSON.stringify(worldState.onlineCeos)}\n\n`
-            for (const client of sseClients) {
-              try {
-                client.write(movePayload)
-              } catch {
-                sseClients.delete(client)
-              }
-            }
+            broadcast(`event: ceo-move\ndata: ${JSON.stringify(worldState.onlineCeos)}\n\n`)
             return sendJson(res, 200, { ok: true, onlineCeos: worldState.onlineCeos })
           }
 
           if (pathname === '/api/agency/config-key' && method === 'POST') {
             const body = await readJsonBody(req)
-            if (typeof body.geminiApiKey === 'string' && body.geminiApiKey.trim()) {
-              writeDotEnvKey(rootDir, 'GEMINI_API_KEY', body.geminiApiKey.trim())
+            if (typeof body.geminiApiKey === 'string' && sanitizeEnvValue(body.geminiApiKey)) {
+              writeDotEnvKey(rootDir, 'GEMINI_API_KEY', sanitizeEnvValue(body.geminiApiKey))
             }
-            if (typeof body.newCeoCode === 'string' && body.newCeoCode.trim().length >= 4) {
-              writeDotEnvKey(rootDir, 'BLEQUI_CEO_CODE', body.newCeoCode.trim())
+            if (typeof body.newCeoCode === 'string' && sanitizeEnvValue(body.newCeoCode).length >= 4) {
+              writeDotEnvKey(rootDir, 'BLEQUI_CEO_CODE', sanitizeEnvValue(body.newCeoCode))
             }
             const { geminiApiKey } = getRuntimeConfig(rootDir)
             return sendJson(res, 200, { ok: true, geminiConfigured: Boolean(geminiApiKey) })
@@ -372,15 +412,23 @@ export function blequiAgencyServerPlugin(): Plugin {
             persistAndBroadcast()
 
             const { geminiApiKey } = getRuntimeConfig(rootDir)
-            const turn = await runAgentConversationTurn({
-              agent,
-              world: worldState,
-              userMessage,
-              ceoName,
-              apiKey: geminiApiKey || undefined,
-              rootDir,
-              forceSelfBuild,
-            })
+            let turn: Awaited<ReturnType<typeof runAgentConversationTurn>>
+            try {
+              turn = await runAgentConversationTurn({
+                agent,
+                world: worldState,
+                userMessage,
+                ceoName,
+                apiKey: geminiApiKey || undefined,
+                rootDir,
+                forceSelfBuild,
+              })
+            } catch (err: any) {
+              // Nunca deixar o funcionário preso em "thinking" se algo explodir no meio do turno
+              agent.status = 'working'
+              persistAndBroadcast()
+              throw err
+            }
 
             agent.status = 'working'
             agent.currentTask =
@@ -477,7 +525,7 @@ export function blequiAgencyServerPlugin(): Plugin {
 
             if (approve) {
               const zoneMeta = STUDIO_ZONES[proposal.zone]
-              const providerMeta = AGENT_PROVIDERS[proposal.provider]
+              const providerMeta = AGENT_PROVIDERS[proposal.provider] ?? AGENT_PROVIDERS.gemini
               const newEmployee: AgentEmployee = {
                 id: `agent-${Date.now()}`,
                 name: proposal.name,
@@ -557,7 +605,7 @@ export function blequiAgencyServerPlugin(): Plugin {
               worldState.allowSelfBuildWithoutApproval = Boolean(body.value)
             } else if (action === 'updateAgentStatus') {
               const ag = worldState.agents.find((a) => a.id === body.agentId)
-              if (ag) {
+              if (ag && VALID_AGENT_STATUSES.includes(body.status)) {
                 ag.status = body.status as AgentStatus
                 ag.logs.unshift({
                   id: `log-${Date.now()}`,
@@ -578,11 +626,15 @@ export function blequiAgencyServerPlugin(): Plugin {
                 })
               }
             } else if (action === 'createAgent') {
-              const input = body.input
+              const input = body.input && typeof body.input === 'object' ? body.input : {}
               const zone = (input.zone in STUDIO_ZONES ? input.zone : 'criacao') as StudioZoneId
               const zoneMeta = STUDIO_ZONES[zone]
               const isAI = input.entityType !== 'human'
-              const providerId: AgentProviderId | undefined = isAI ? (input.provider || 'gemini') : undefined
+              const providerId: AgentProviderId | undefined = isAI
+                ? input.provider in AGENT_PROVIDERS
+                  ? (input.provider as AgentProviderId)
+                  : 'gemini'
+                : undefined
               const providerMeta = providerId ? AGENT_PROVIDERS[providerId] : null
               const existingInZone = worldState.agents.filter((a) => a.zone === zone).length
               const roomSize = ROOM_SCALES[worldState.roomScale].size

@@ -97,6 +97,7 @@ interface AgencyState {
   hasEnteredAgency: boolean
   introStage: CoastalIntroStage
   isCeoLoginOpen: boolean
+  isStudioPickerOpen: boolean
   liveConnected: boolean
   liveFps: number
   serverMeta: ServerMeta | null
@@ -143,6 +144,7 @@ interface AgencyState {
   finishWelcomeIntro: () => void
   openEntryHud: () => void
   setCeoLoginOpen: (open: boolean) => void
+  setStudioPickerOpen: (open: boolean) => void
   applySharedState: (shared: SharedWorldState) => void
 
   setPlayerAvatar: (avatar: PlayerAvatarConfig) => void
@@ -286,7 +288,8 @@ export const useAgencyStore = create<AgencyState>((set, get) => {
         // Ignore malformed frame
       }
     })
-    es.addEventListener('presence', (evt) => {
+    // O servidor envia os passos das Co-CEOs como `ceo-move` (sem gravar em disco, ~4Hz)
+    const onPresenceFrame = (evt: Event) => {
       try {
         const ceos = JSON.parse((evt as MessageEvent).data) as OnlineCeoPresence[]
         if (Array.isArray(ceos)) {
@@ -295,7 +298,12 @@ export const useAgencyStore = create<AgencyState>((set, get) => {
       } catch {
         // Ignore malformed frame
       }
-    })
+    }
+    es.addEventListener('ceo-move', onPresenceFrame)
+    es.addEventListener('presence', onPresenceFrame)
+    es.onopen = () => {
+      set({ liveConnected: true })
+    }
     es.onerror = () => {
       set({ liveConnected: false })
     }
@@ -325,6 +333,7 @@ export const useAgencyStore = create<AgencyState>((set, get) => {
     hasEnteredAgency: false,
     introStage: 'boat',
     isCeoLoginOpen: false,
+    isStudioPickerOpen: false,
     liveConnected: false,
     liveFps: 60,
     serverMeta: null,
@@ -447,6 +456,7 @@ export const useAgencyStore = create<AgencyState>((set, get) => {
         // Keep each Co-CEO's view (island vs studio) local so SSE sync never yanks the camera away
         activeStudioZone: state.worldView === 'studio' ? state.activeStudioZone : shared.activeStudioZone,
         roomScale: shared.roomScale,
+        timeOfDay: shared.timeOfDay ?? state.timeOfDay,
         comfortScore: shared.comfortScore,
         allowSelfBuildWithoutApproval: shared.allowSelfBuildWithoutApproval,
         agents: shared.agents,
@@ -456,7 +466,7 @@ export const useAgencyStore = create<AgencyState>((set, get) => {
         selectedAgentId:
           state.selectedAgentId && shared.agents.some((a) => a.id === state.selectedAgentId)
             ? state.selectedAgentId
-            : state.selectedAgentId,
+            : null, // funcionário removido pela outra Co-CEO: fecha o inspector
       })),
 
     fetchServerMeta: async () => {
@@ -560,6 +570,8 @@ export const useAgencyStore = create<AgencyState>((set, get) => {
 
     openEntryHud: () => set({ isCeoLoginOpen: true, isMenuOpen: false }),
     setCeoLoginOpen: (isCeoLoginOpen) => set({ isCeoLoginOpen }),
+    setStudioPickerOpen: (isStudioPickerOpen) =>
+      set(isStudioPickerOpen ? { isStudioPickerOpen, isMenuOpen: false, isPhoneOpen: false } : { isStudioPickerOpen }),
 
     setWorldView: async (worldView, zone) => {
       const nextZone = zone ?? get().activeStudioZone
@@ -586,6 +598,7 @@ export const useAgencyStore = create<AgencyState>((set, get) => {
       set((state) => ({
         worldView: 'studio',
         activeStudioZone: zone,
+        isStudioPickerOpen: false,
         selectedAgentId: null,
         nearbyInteractable: null,
         studioCameraMode: 'walk',
@@ -722,6 +735,11 @@ export const useAgencyStore = create<AgencyState>((set, get) => {
         if (Array.isArray(data.actions) && data.actions.length > 0) {
           get().showToast(`✨ ${data.actions.join(' · ')}`)
         }
+        if (!res.ok || data.ok === false) {
+          get().showToast(`⚠️ ${data.error || 'O servidor não conseguiu responder agora.'}`)
+        }
+      } catch {
+        get().showToast('⚠️ Sem conexão com o servidor local da Blequi.')
       } finally {
         set((s) => ({ chatPendingByAgent: { ...s.chatPendingByAgent, [agentId]: false } }))
       }
@@ -741,6 +759,11 @@ export const useAgencyStore = create<AgencyState>((set, get) => {
         if (Array.isArray(data.actions) && data.actions.length > 0) {
           get().showToast(`🏗️ Auto-criação concluída: ${data.actions.join(' · ')}`)
         }
+        if (!res.ok || data.ok === false) {
+          get().showToast(`⚠️ ${data.error || 'O servidor não conseguiu responder agora.'}`)
+        }
+      } catch {
+        get().showToast('⚠️ Sem conexão com o servidor local da Blequi.')
       } finally {
         set((s) => ({ chatPendingByAgent: { ...s.chatPendingByAgent, [agentId]: false } }))
       }
