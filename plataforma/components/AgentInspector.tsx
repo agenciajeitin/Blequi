@@ -1,28 +1,27 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useState } from 'react'
 import {
-  Bot,
   Building2,
   CheckCircle2,
   Cpu,
   Heart,
-  Loader2,
   MessageSquare,
-  Send,
   Sparkles,
   Trash2,
-  User,
   Wand2,
   X,
 } from 'lucide-react'
 import {
   AGENT_PROVIDERS,
   PROP_CATALOG,
-  PROVIDER_ORDER,
   STUDIO_ZONES,
 } from '@funcionarios/providers'
+import { agentProviderToExternal, getActiveAgentProviders } from '@funcionarios/sede'
 import type { AgentMood, AgentProviderId, AgentStatus } from '@funcionarios/types'
 import { useAgencyStore } from '@plataforma/store/useAgencyStore'
 import { coastalAudio } from '@ambiente/audio/coastalAudio'
+import { AgentPortrait } from './chat/AgentPortrait'
+import { ChatComposer } from './chat/ChatComposer'
+import { ChatMessageList } from './chat/ChatMessageList'
 
 const STATUS_OPTIONS: { id: AgentStatus; label: string; dot: string }[] = [
   { id: 'working', label: 'Trabalhando', dot: 'bg-[#02c6a7]' },
@@ -54,11 +53,12 @@ export function AgentInspector() {
   const updateAgentProvider = useAgencyStore((s) => s.updateAgentProvider)
   const removeAgent = useAgencyStore((s) => s.removeAgent)
   const removeProp = useAgencyStore((s) => s.removeProp)
+  const serverMeta = useAgencyStore((s) => s.serverMeta)
+  const groups = useAgencyStore((s) => s.groups)
+  const setSettingsOpen = useAgencyStore((s) => s.setSettingsOpen)
 
   const [tab, setTab] = useState<'chat' | 'wellbeing' | 'config'>('chat')
-  const [draft, setDraft] = useState('')
   const [confirmFire, setConfirmFire] = useState(false)
-  const chatEndRef = useRef<HTMLDivElement>(null)
 
   const agent = agents.find((a) => a.id === selectedAgentId)
 
@@ -66,11 +66,13 @@ export function AgentInspector() {
     setConfirmFire(false)
   }, [selectedAgentId])
 
-  useEffect(() => {
-    chatEndRef.current?.scrollIntoView({ behavior: 'smooth' })
-  }, [agent?.chatHistory.length, tab])
-
   if (!agent) return null
+
+  // Só mostra as contas de IA que têm chave ativa no servidor
+  const activeProviders = getActiveAgentProviders(serverMeta?.aiProviders)
+  const currentExternal = agentProviderToExternal(agent.provider)
+  const currentIsActive = activeProviders.some((p) => agentProviderToExternal(p) === currentExternal)
+  const teams = groups.filter((g) => g.memberAgentIds.includes(agent.id))
 
   const zone = STUDIO_ZONES[agent.zone]
   const provider = agent.provider ? AGENT_PROVIDERS[agent.provider] : null
@@ -78,14 +80,6 @@ export function AgentInspector() {
   const isPending = Boolean(chatPendingByAgent[agent.id])
   const agentProps = props.filter((p) => p.createdByAgentId === agent.id)
 
-  const handleSend = async (e: React.FormEvent) => {
-    e.preventDefault()
-    if (!draft.trim() || isPending) return
-    coastalAudio.playPop(640, 0.06)
-    const text = draft.trim()
-    setDraft('')
-    await sendChatMessage(agent.id, text)
-  }
 
   return (
     <aside className="cw-pop-in pointer-events-auto fixed right-5 top-20 bottom-5 z-30 flex w-[392px] max-w-[calc(100vw-2.5rem)] flex-col overflow-hidden rounded-[32px] border-[3px] border-white bg-white shadow-[0_24px_64px_rgba(32,54,102,0.28)]">
@@ -94,12 +88,7 @@ export function AgentInspector() {
         <div className="flex items-start justify-between gap-2">
           <div className="min-w-0">
             <div className="flex items-center gap-2.5">
-              <span
-                className="flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl text-white shadow-sm"
-                style={{ backgroundColor: agent.accentColor }}
-              >
-                {agent.entityType === 'ai' ? <Bot className="h-5 w-5" /> : <User className="h-5 w-5" />}
-              </span>
+              <AgentPortrait agent={agent} size={44} showStatus />
               <div className="min-w-0">
                 <h2 className="truncate text-base font-black text-[#3b3777]">{agent.name}</h2>
                 <p className="truncate text-xs font-bold text-[#7c79a6]">{agent.role}</p>
@@ -120,6 +109,16 @@ export function AgentInspector() {
                   {provider.name}
                 </span>
               )}
+              {teams.map((g) => (
+                <span
+                  key={g.id}
+                  className="rounded-full px-2 py-0.5 text-[10px] font-extrabold"
+                  style={{ backgroundColor: `${g.color}1f`, color: g.color }}
+                  title={`Grupo ${g.name}`}
+                >
+                  {g.category}
+                </span>
+              ))}
               <button
                 type="button"
                 onClick={() => {
@@ -243,79 +242,13 @@ export function AgentInspector() {
             </button>
           </div>
 
-          <div className="flex-1 space-y-3 overflow-y-auto bg-[#fbfdff] p-4">
-            {agent.chatHistory.map((msg) => (
-              <div
-                key={msg.id}
-                className={`flex flex-col ${
-                  msg.sender === 'ceo'
-                    ? 'items-end'
-                    : msg.sender === 'system'
-                      ? 'items-center'
-                      : 'items-start'
-                }`}
-              >
-                {msg.sender === 'system' ? (
-                  <div className="rounded-2xl bg-[#fff8dc] px-3.5 py-2 text-center text-[11px] font-bold text-[#a16207]">
-                    {msg.text}
-                  </div>
-                ) : (
-                  <div
-                    className={`max-w-[88%] rounded-[20px] px-3.5 py-2.5 text-xs font-semibold leading-relaxed shadow-sm ${
-                      msg.sender === 'ceo'
-                        ? 'bg-[#3b3777] text-white'
-                        : 'border border-[#e8eef7] bg-white text-[#3b3777]'
-                    }`}
-                  >
-                    <div className="mb-1 flex items-center justify-between gap-3 text-[10px] opacity-70">
-                      <span className="font-extrabold">{msg.senderName}</span>
-                      <span className="font-mono">{msg.time}</span>
-                    </div>
-                    <p className="whitespace-pre-wrap">{msg.text}</p>
-                    {msg.actions && msg.actions.length > 0 && (
-                      <div className="mt-2 flex flex-wrap gap-1">
-                        {msg.actions.map((act, i) => (
-                          <span
-                            key={i}
-                            className="inline-flex items-center gap-1 rounded-full bg-[#e6fbf6] px-2.5 py-0.5 text-[10px] font-extrabold text-[#01967e]"
-                          >
-                            ✨ {act}
-                          </span>
-                        ))}
-                      </div>
-                    )}
-                  </div>
-                )}
-              </div>
-            ))}
-            {isPending && (
-              <div className="flex items-center gap-2 text-xs font-bold text-[#02c6a7]">
-                <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                {agent.name} está pensando e construindo na ilha...
-              </div>
-            )}
-            <div ref={chatEndRef} />
-          </div>
+          <ChatMessageList messages={agent.chatHistory} typingAgents={isPending || agent.status === 'thinking' ? [agent] : []} />
 
-          <form onSubmit={handleSend} className="border-t border-[#edf2f9] bg-white p-3">
-            <div className="flex gap-2">
-              <input
-                type="text"
-                value={draft}
-                onChange={(e) => setDraft(e.target.value)}
-                placeholder={`Converse ou peça algo 3D para ${agent.name}...`}
-                className="flex-1 rounded-full border-2 border-[#edf2f9] bg-[#f5f8fd] px-4 py-2 text-xs font-bold text-[#3b3777] placeholder:text-[#9ea4be] focus:border-[#02c6a7] focus:bg-white focus:outline-none"
-              />
-              <button
-                type="submit"
-                disabled={isPending || !draft.trim()}
-                className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-gradient-to-b from-[#20e4c4] to-[#02c6a7] text-white shadow-md transition-transform hover:scale-105 disabled:opacity-45"
-                title="Enviar"
-              >
-                <Send className="h-4 w-4" />
-              </button>
-            </div>
-          </form>
+          <ChatComposer
+            placeholder={`Converse ou peça algo 3D para ${agent.name}...`}
+            disabled={isPending}
+            onSend={(text, atts) => sendChatMessage(agent.id, text, atts)}
+          />
         </div>
       )}
 
@@ -470,33 +403,50 @@ export function AgentInspector() {
 
           {agent.entityType === 'ai' && (
             <section>
-              <label className="mb-2 block text-xs font-black text-[#3b3777]">Motor de IA</label>
-              <div className="space-y-1.5">
-                {PROVIDER_ORDER.map((id) => {
-                  const prov = AGENT_PROVIDERS[id]
-                  const selected = agent.provider === prov.id
-                  return (
-                    <button
-                      key={prov.id}
-                      type="button"
-                      onClick={() => updateAgentProvider(agent.id, prov.id as AgentProviderId)}
-                      className={`flex w-full items-center justify-between rounded-full border-2 px-3.5 py-2 text-left transition-all ${
-                        selected
-                          ? 'border-[#3b3777] bg-[#f4f7ff]'
-                          : 'border-[#edf2f9] bg-white hover:border-[#d5e0f0]'
-                      }`}
-                    >
-                      <span className="flex items-center gap-2 text-xs font-extrabold text-[#3b3777]">
-                        <span className="h-2.5 w-2.5 rounded-full" style={{ backgroundColor: prov.color }} />
-                        {prov.name}
-                      </span>
-                      <span className="font-mono text-[10px] font-bold" style={{ color: prov.color }}>
-                        {prov.badge}
-                      </span>
-                    </button>
-                  )
-                })}
-              </div>
+              <label className="mb-2 block text-xs font-black text-[#3b3777]">IA deste agente</label>
+              {activeProviders.length === 0 ? (
+                <button
+                  type="button"
+                  onClick={() => setSettingsOpen(true)}
+                  className="w-full rounded-2xl border-2 border-dashed border-[#dfe6f2] p-3 text-left text-[11px] font-semibold text-[#7c79a6] hover:bg-[#f8fbff]"
+                >
+                  Nenhuma IA ativa ainda. Toque aqui para colar uma chave em Governança Local.
+                </button>
+              ) : (
+                <div className="space-y-1.5">
+                  {activeProviders.map((id) => {
+                    const prov = AGENT_PROVIDERS[id]
+                    const status = serverMeta?.aiProviders?.find((p) => p.id === agentProviderToExternal(id))
+                    const selected = agentProviderToExternal(agent.provider) === agentProviderToExternal(id)
+                    return (
+                      <button
+                        key={prov.id}
+                        type="button"
+                        onClick={() => updateAgentProvider(agent.id, prov.id as AgentProviderId)}
+                        className={`flex w-full items-center justify-between rounded-full border-2 px-3.5 py-2 text-left transition-all ${
+                          selected
+                            ? 'border-[#3b3777] bg-[#f4f7ff]'
+                            : 'border-[#edf2f9] bg-white hover:border-[#d5e0f0]'
+                        }`}
+                      >
+                        <span className="flex items-center gap-2 text-xs font-extrabold text-[#3b3777]">
+                          <span className="h-2.5 w-2.5 rounded-full" style={{ backgroundColor: prov.color }} />
+                          {prov.name}
+                        </span>
+                        <span className="truncate pl-2 font-mono text-[10px] font-bold" style={{ color: prov.color }}>
+                          {status?.model || prov.badge}
+                        </span>
+                      </button>
+                    )
+                  })}
+                  {!currentIsActive && agent.provider && (
+                    <p className="rounded-2xl bg-[#fff8dc] px-3 py-2 text-[11px] font-bold text-[#a16207]">
+                      {agent.name} usa {AGENT_PROVIDERS[agent.provider].name}, que está sem chave ativa — escolha uma
+                      das IAs acima.
+                    </p>
+                  )}
+                </div>
+              )}
             </section>
           )}
 

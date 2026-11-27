@@ -329,13 +329,14 @@ export function createInitialWorldState(): SharedWorldState {
     worldView: 'island',
     activeStudioZone: 'b2b-lab',
     timeOfDay: 'daylight',
-    roomScale: 'medium',
+    roomScale: 'large',
     comfortScore: 88,
     allowSelfBuildWithoutApproval: true,
     agents: INITIAL_AGENTS,
     props: INITIAL_WORLD_PROPS,
     proposals: [],
     onlineCeos: [],
+    groups: [],
     updatedAt: new Date().toISOString(),
   }
 }

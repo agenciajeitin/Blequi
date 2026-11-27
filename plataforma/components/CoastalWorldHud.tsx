@@ -428,7 +428,7 @@ export function CoastalWorldHud() {
             type="button"
             onClick={() => {
               coastalAudio.playPop(660, 0.08)
-              setPhoneOpen(true, 'map')
+              setPhoneOpen(true, 'messages')
             }}
             aria-label="Abrir celular da Ilha Blequi"
             className="pointer-events-auto group absolute right-6 bottom-4 origin-bottom-right -rotate-6 transition-all duration-300 hover:-translate-y-3 hover:rotate-0 hover:scale-105"

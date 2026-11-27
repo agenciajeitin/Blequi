@@ -2,15 +2,10 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { useFrame } from '@react-three/fiber'
 import { Html } from '@react-three/drei'
 import * as THREE from 'three'
-import type {
-  AgentEmployee,
-  AgentMood,
-  BodyAccessoryId,
-  HeadAccessoryId,
-  ShoeStyleId,
-} from '@funcionarios/types'
+import type { AgentEmployee, AgentMood } from '@funcionarios/types'
 import { studioPlayerLiveTransform } from '@plataforma/store/useAgencyStore'
-import { CoastalCharacterMesh, type CoastalCharacterAppearance } from './CoastalCharacterMesh'
+import { CoastalCharacterMesh } from './CoastalCharacterMesh'
+import { getEmployeeAppearance } from './agentAppearance'
 
 interface StudioResidentAgentProps {
   agent: AgentEmployee
@@ -34,78 +29,6 @@ const WAVE_EXIT_DIST_SQ = 3.35 * 3.35
 
 /** Shared mutable positions of studio resident AI employees for zero-rerender 60 FPS proximity checks */
 export const studioAgentLivePositions: Record<string, { x: number; y: number; z: number }> = {}
-
-function getEmployeeAppearance(agent: AgentEmployee, index: number): CoastalCharacterAppearance & {
-  colorIndex: number
-  customBodyColor: string
-  customLimbColor: string
-  customAccentColor: string
-  faceStyle: 'classic' | 'lashes'
-  headAccessory: HeadAccessoryId
-  bodyAccessory: BodyAccessoryId
-  shoeStyle: ShoeStyleId
-} {
-  if (agent.id === 'agent-luma') {
-    return {
-      colorIndex: 0,
-      customBodyColor: '#f2785c',
-      customLimbColor: '#c95c48',
-      customAccentColor: '#f6d35f',
-      faceStyle: 'lashes',
-      headAccessory: 'sunhat',
-      bodyAccessory: 'backpack',
-      shoeStyle: 'sandals',
-    }
-  }
-  if (agent.id === 'agent-kael') {
-    return {
-      colorIndex: 2,
-      customBodyColor: '#4c7be8',
-      customLimbColor: '#3758b8',
-      customAccentColor: '#02c6a7',
-      faceStyle: 'classic',
-      headAccessory: 'headphones',
-      bodyAccessory: 'fannypack',
-      shoeStyle: 'sneakers',
-    }
-  }
-  if (agent.id === 'agent-vex') {
-    return {
-      colorIndex: 1,
-      customBodyColor: '#22a6d4',
-      customLimbColor: '#2f659c',
-      customAccentColor: '#f6d35f',
-      faceStyle: 'classic',
-      headAccessory: 'visor',
-      bodyAccessory: 'wings',
-      shoeStyle: 'fast',
-    }
-  }
-  if (agent.id === 'agent-nori') {
-    return {
-      colorIndex: 3,
-      customBodyColor: '#00bcc7',
-      customLimbColor: '#445fa8',
-      customAccentColor: '#b79cf2',
-      faceStyle: 'lashes',
-      headAccessory: 'beanie',
-      bodyAccessory: 'fannypack',
-      shoeStyle: 'boots',
-    }
-  }
-
-  const headPresets: HeadAccessoryId[] = ['beanie', 'headphones', 'visor', 'sunhat']
-  return {
-    colorIndex: index % 5,
-    customBodyColor: agent.accentColor,
-    customLimbColor: '#434b78',
-    customAccentColor: '#02c6a7',
-    faceStyle: index % 2 === 0 ? 'lashes' : 'classic',
-    headAccessory: headPresets[index % headPresets.length],
-    bodyAccessory: 'fannypack',
-    shoeStyle: 'sneakers',
-  }
-}
 
 /**
  * Living Coastal World AI employee strolling gently around their private studio

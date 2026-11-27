@@ -1,37 +1,45 @@
-import { useState } from 'react'
-import { Bot, User, X } from 'lucide-react'
-import {
-  AGENT_PROVIDERS,
-  PROVIDER_ORDER,
-  STUDIO_ZONES,
-} from '@funcionarios/providers'
-import type {
-  AgentProviderId,
-  MemberEntityType,
-  StudioZoneId,
-} from '@funcionarios/types'
+import { useEffect, useState } from 'react'
+import { Bot, Building2, User, X } from 'lucide-react'
+import { AGENT_PROVIDERS } from '@funcionarios/providers'
+import { SEDE_ZONE, agentProviderToExternal, getActiveAgentProviders } from '@funcionarios/sede'
+import type { AgentProviderId, MemberEntityType } from '@funcionarios/types'
 import { useAgencyStore } from '@plataforma/store/useAgencyStore'
-
-const ZONES = Object.values(STUDIO_ZONES)
 
 export function CreateAgentModal() {
   const isOpen = useAgencyStore((s) => s.isCreateModalOpen)
   const setCreateModalOpen = useAgencyStore((s) => s.setCreateModalOpen)
   const createAgent = useAgencyStore((s) => s.createAgent)
+  const serverMeta = useAgencyStore((s) => s.serverMeta)
+  const fetchServerMeta = useAgencyStore((s) => s.fetchServerMeta)
+  const setSettingsOpen = useAgencyStore((s) => s.setSettingsOpen)
 
   const [entityType, setEntityType] = useState<MemberEntityType>('ai')
   const [name, setName] = useState('')
   const [role, setRole] = useState('')
-  const [zone, setZone] = useState<StudioZoneId>('engenharia')
-  const [provider, setProvider] = useState<AgentProviderId>('gemini')
+  const [provider, setProvider] = useState<AgentProviderId | ''>('')
   const [skillsText, setSkillsText] = useState('')
   const [currentTask, setCurrentTask] = useState('')
 
+  const activeProviders = getActiveAgentProviders(serverMeta?.aiProviders)
+
+  // Atualiza a lista de IAs ativas sempre que o modal abre
+  useEffect(() => {
+    if (isOpen) void fetchServerMeta()
+  }, [isOpen, fetchServerMeta])
+
+  // Pré-seleciona a primeira IA ativa (e corrige se a escolhida perdeu a chave)
+  useEffect(() => {
+    if (activeProviders.length === 0) return
+    if (!provider || !activeProviders.includes(provider)) setProvider(activeProviders[0])
+  }, [activeProviders.join(','), provider])
+
   if (!isOpen) return null
+
+  const aiBlocked = entityType === 'ai' && activeProviders.length === 0
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault()
-    if (!name.trim() || !role.trim()) return
+    if (!name.trim() || !role.trim() || aiBlocked) return
 
     const skills = skillsText
       .split(',')
@@ -42,8 +50,8 @@ export function CreateAgentModal() {
       name,
       entityType,
       role,
-      zone,
-      provider: entityType === 'ai' ? provider : undefined,
+      zone: SEDE_ZONE,
+      provider: entityType === 'ai' && provider ? provider : undefined,
       currentTask,
       systemPrompt: `Você é ${name}, atuando como ${role} na Ilha Blequi.`,
       skills,
@@ -131,41 +139,47 @@ export function CreateAgentModal() {
             </div>
           </div>
 
-          <div className="grid grid-cols-2 gap-3">
+          <div className="flex items-center gap-2 rounded-2xl bg-[#f5f9ff] px-3.5 py-2 text-[11px] font-bold text-[#6c6996]">
+            <Building2 className="h-4 w-4 shrink-0 text-[#02c6a7]" />
+            Trabalha na Sede da Blequi, com mesa própria junto da equipe.
+          </div>
+
+          {entityType === 'ai' && (
             <div>
-              <label className="mb-1 block text-xs font-black text-[#3b3777]">Estúdio na Ilha</label>
-              <select
-                value={zone}
-                onChange={(e) => setZone(e.target.value as StudioZoneId)}
-                className="w-full rounded-full border-2 border-[#edf2f9] bg-[#f5f8fd] px-3.5 py-2 text-xs font-bold text-[#3b3777] focus:border-[#02c6a7] focus:bg-white focus:outline-none"
-              >
-                {ZONES.map((z) => (
-                  <option key={z.id} value={z.id}>
-                    {z.shortName}
-                  </option>
-                ))}
-              </select>
-            </div>
-            {entityType === 'ai' && (
-              <div>
-                <label className="mb-1 block text-xs font-black text-[#3b3777]">Motor de IA</label>
-                <select
-                  value={provider}
-                  onChange={(e) => setProvider(e.target.value as AgentProviderId)}
-                  className="w-full rounded-full border-2 border-[#edf2f9] bg-[#f5f8fd] px-3.5 py-2 text-xs font-bold text-[#3b3777] focus:border-[#02c6a7] focus:bg-white focus:outline-none"
+              <label className="mb-1 block text-xs font-black text-[#3b3777]">IA deste agente</label>
+              {activeProviders.length === 0 ? (
+                <button
+                  type="button"
+                  onClick={() => setSettingsOpen(true)}
+                  className="w-full rounded-2xl border-2 border-dashed border-[#f6b93b] bg-[#fff8dc] p-3 text-left text-[11px] font-bold text-[#a16207]"
                 >
-                  {PROVIDER_ORDER.map((id) => {
+                  Nenhuma IA ativa. Cole uma chave em Governança Local antes de contratar um agente de IA.
+                </button>
+              ) : (
+                <div className="grid grid-cols-2 gap-1.5">
+                  {activeProviders.map((id) => {
                     const p = AGENT_PROVIDERS[id]
+                    const model = serverMeta?.aiProviders?.find((st) => st.id === agentProviderToExternal(id))?.model
+                    const selected = provider === id
                     return (
-                      <option key={p.id} value={p.id}>
-                        {p.name} ({p.badge})
-                      </option>
+                      <button
+                        key={p.id}
+                        type="button"
+                        onClick={() => setProvider(id)}
+                        className={`flex items-center gap-2 rounded-full border-2 px-3 py-2 text-left text-xs font-extrabold transition-all ${
+                          selected ? 'border-[#3b3777] bg-[#f4f7ff] text-[#3b3777]' : 'border-[#edf2f9] bg-white text-[#7c79a6]'
+                        }`}
+                        title={model}
+                      >
+                        <span className="h-2.5 w-2.5 shrink-0 rounded-full" style={{ backgroundColor: p.color }} />
+                        {p.name}
+                      </button>
                     )
                   })}
-                </select>
-              </div>
-            )}
-          </div>
+                </div>
+              )}
+            </div>
+          )}
 
           <div>
             <label className="mb-1 block text-xs font-black text-[#3b3777]">
@@ -187,7 +201,7 @@ export function CreateAgentModal() {
             >
               Cancelar
             </button>
-            <button type="submit" className="cw-cta cw-cta-mint">
+            <button type="submit" disabled={aiBlocked} className="cw-cta cw-cta-mint disabled:opacity-50">
               <span className="cw-cta-inner px-6 py-2.5 text-xs font-extrabold">
                 Adicionar à Ilha
               </span>

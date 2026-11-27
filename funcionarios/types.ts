@@ -19,7 +19,7 @@ export type WorldTimeOfDay = 'golden' | 'daylight' | 'dusk'
 
 export type CoastalIntroStage = 'boat' | 'welcome' | 'playing'
 
-export type CoastalPhoneTab = 'map' | 'studios' | 'wellbeing' | 'customize' | 'projects'
+export type CoastalPhoneTab = 'messages' | 'studios' | 'wellbeing' | 'customize' | 'projects'
 
 export type HeadAccessoryId = 'none' | 'headphones' | 'beanie' | 'sunhat' | 'crown' | 'visor'
 export type BodyAccessoryId = 'fannypack' | 'backpack' | 'wings' | 'buoy' | 'none'
@@ -105,6 +105,18 @@ export interface AgentLogEntry {
   kind?: 'info' | 'creation' | 'reward' | 'chat'
 }
 
+export type CeoSlot = 'ceo-1' | 'ceo-2'
+
+export interface ChatAttachment {
+  id: string
+  kind: 'image' | 'file'
+  name: string
+  mimeType: string
+  size: number
+  /** Caminho servido pelo servidor local (precisa do ?code= da Chave CEO) */
+  url: string
+}
+
 export interface AgentChatMessage {
   id: string
   sender: 'ceo' | 'agent' | 'system'
@@ -112,6 +124,26 @@ export interface AgentChatMessage {
   text: string
   time: string
   actions?: string[]
+  attachments?: ChatAttachment[]
+  /** Qual CEO enviou (para colorir o balão de cada um) */
+  senderCeoSlot?: CeoSlot
+  /** Qual agente respondeu (usado nos grupos) */
+  senderAgentId?: string
+}
+
+/**
+ * Grupo de conversa centralizado entre os CEOs e os agentes.
+ * O nome/categoria do grupo define a equipe da qual cada agente membro faz parte.
+ */
+export interface ChatGroup {
+  id: string
+  name: string
+  category: string
+  color: string
+  memberAgentIds: string[]
+  createdBy: string
+  createdAt: string
+  messages: AgentChatMessage[]
 }
 
 export interface AgentWellbeing {
@@ -225,5 +257,6 @@ export interface SharedWorldState {
   props: WorldCreationProp[]
   proposals: PendingEmployeeProposal[]
   onlineCeos: OnlineCeoPresence[]
+  groups: ChatGroup[]
   updatedAt: string
 }

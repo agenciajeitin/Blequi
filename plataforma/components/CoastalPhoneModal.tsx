@@ -1,14 +1,13 @@
-import { useEffect, useState } from 'react'
+import { useState } from 'react'
 import {
   Building2,
   CheckCircle2,
   Circle,
   ClipboardList,
-  Compass,
   Gauge,
   Heart,
-  MapPin,
   MessageCircle,
+  MessagesSquare,
   Plus,
   Shirt,
   Sparkles,
@@ -16,27 +15,21 @@ import {
   Users,
   X,
 } from 'lucide-react'
-import type { CoastalPhoneTab, StudioZoneId } from '@funcionarios/types'
+import type { CoastalPhoneTab } from '@funcionarios/types'
 import { AGENT_PROVIDERS, PROP_CATALOG, STUDIO_ZONES } from '@funcionarios/providers'
-import { playerLiveTransform, useAgencyStore } from '@plataforma/store/useAgencyStore'
+import { useAgencyStore } from '@plataforma/store/useAgencyStore'
 import { COASTAL_AVATAR_PALETTES } from '@ambiente/shaders/coastalShaders'
-import { COASTAL_STUDIO_LOCATIONS } from '@ambiente/island/CoastalStudios'
 import { coastalAudio } from '@ambiente/audio/coastalAudio'
+import { MessagesApp } from './MessagesApp'
+import { AgentPortrait } from './chat/AgentPortrait'
 
-const PHONE_TABS: { id: CoastalPhoneTab; label: string; color: string; Icon: typeof MapPin }[] = [
-  { id: 'map', label: 'Mapa', color: '#3b82f6', Icon: MapPin },
+const PHONE_TABS: { id: CoastalPhoneTab; label: string; color: string; Icon: typeof MessagesSquare }[] = [
+  { id: 'messages', label: 'Mensagens', color: '#3b82f6', Icon: MessagesSquare },
   { id: 'studios', label: 'Equipe', color: '#02c6a7', Icon: Users },
   { id: 'wellbeing', label: 'Bem-Estar', color: '#f59e0b', Icon: Sparkles },
   { id: 'customize', label: 'Avatar', color: '#f2676f', Icon: Shirt },
   { id: 'projects', label: 'Projetos', color: '#6366f1', Icon: ClipboardList },
 ]
-
-function worldToMapPercent(wx: number, wz: number) {
-  // Maps island x [-28..28] -> 8..92%, z [-20..28] -> 10..88%
-  const x = Math.max(8, Math.min(92, 50 + (wx / 28) * 42))
-  const y = Math.max(10, Math.min(88, 44 + (wz / 27) * 38))
-  return { x, y }
-}
 
 /**
  * 1:1 Coastal World Hand-Held Interactive Smartphone (steps/105/media_0.png):
@@ -54,37 +47,22 @@ export function CoastalPhoneModal() {
   const comfortScore = useAgencyStore((s) => s.comfortScore)
   const liveFps = useAgencyStore((s) => s.liveFps)
   const onlineCeos = useAgencyStore((s) => s.onlineCeos)
-  const currentUser = useAgencyStore((s) => s.currentUser)
 
   const setPhoneOpen = useAgencyStore((s) => s.setPhoneOpen)
   const setPhoneTab = useAgencyStore((s) => s.setPhoneTab)
   const setCustomizerOpen = useAgencyStore((s) => s.setCustomizerOpen)
   const setCreateModalOpen = useAgencyStore((s) => s.setCreateModalOpen)
-  const teleportPlayerTo = useAgencyStore((s) => s.teleportPlayerTo)
   const enterStudioZone = useAgencyStore((s) => s.enterStudioZone)
-  const selectAgent = useAgencyStore((s) => s.selectAgent)
+  const setActiveThread = useAgencyStore((s) => s.setActiveThread)
   const removeAgent = useAgencyStore((s) => s.removeAgent)
   const rewardAgentOrProp = useAgencyStore((s) => s.rewardAgentOrProp)
   const toggleDeliverable = useAgencyStore((s) => s.toggleDeliverable)
 
-  const [selectedPinZone, setSelectedPinZone] = useState<Exclude<StudioZoneId, 'editorial'> | null>(null)
   const [confirmFireId, setConfirmFireId] = useState<string | null>(null)
-  const [playerPin, setPlayerPin] = useState(() => worldToMapPercent(playerLiveTransform.x, playerLiveTransform.z))
-
-  useEffect(() => {
-    if (!isOpen || phoneTab !== 'map') return
-    const id = setInterval(() => {
-      setPlayerPin(worldToMapPercent(playerLiveTransform.x, playerLiveTransform.z))
-    }, 200)
-    return () => clearInterval(id)
-  }, [isOpen, phoneTab])
 
   if (!isOpen) return null
 
   const palette = COASTAL_AVATAR_PALETTES[playerAvatar.colorIndex] ?? COASTAL_AVATAR_PALETTES[4]
-  const selectedPinLoc = selectedPinZone ? COASTAL_STUDIO_LOCATIONS[selectedPinZone] : null
-  const selectedPinMeta = selectedPinZone ? STUDIO_ZONES[selectedPinZone] : null
-  const selectedPinOwner = selectedPinZone ? agents.find((a) => a.zone === selectedPinZone) : null
 
   return (
     <div
@@ -171,157 +149,8 @@ export function CoastalPhoneModal() {
               </div>
             </div>
 
-            {/* ================= TAB 1: INTERACTIVE ISLAND MAP (1:1 steps/105/media_0.png!) ================= */}
-            {phoneTab === 'map' && (
-              <div className="relative flex-1 overflow-hidden bg-gradient-to-b from-[#3db3e8] via-[#4cc2ec] to-[#3aa9e0]">
-                {/* Stylized Top-Down SVG Coastal Blequi Island Map */}
-                <svg viewBox="0 0 100 100" className="h-full w-full select-none">
-                  {/* Subtle ocean wave rings */}
-                  <ellipse cx="50" cy="46" rx="41" ry="33" fill="#7be0f2" opacity="0.45" />
-                  <ellipse cx="50" cy="46" rx="38" ry="30" fill="#ffffff" opacity="0.82" />
-                  {/* Warm golden sandy shoreline */}
-                  <rect x="14" y="18" width="72" height="54" rx="18" fill="#f2d699" />
-                  {/* Lush green island plateau */}
-                  <rect x="17" y="21" width="66" height="46" rx="15" fill="#64cf7c" />
-                  {/* Coastal boulevards */}
-                  <rect x="24" y="54" width="52" height="7" rx="3.5" fill="#dde4ee" />
-                  <rect x="46" y="34" width="8" height="27" rx="3" fill="#dde4ee" />
-                  <circle cx="50" cy="44" r="9.5" fill="#e8eef6" />
-                  {/* Wooden Pier jutting South */}
-                  <rect x="46.5" y="65" width="7" height="16" rx="1.5" fill="#9a7852" />
-                  {/* Satellite Palm Islet Left Bay */}
-                  <circle cx="15" cy="77" r="5" fill="#ffffff" opacity="0.7" />
-                  <circle cx="15" cy="77" r="3.6" fill="#f2d699" />
-                  <circle cx="15" cy="77" r="2.2" fill="#47c46a" />
-                  {/* Twin Lighthouses */}
-                  <circle cx="12" cy="52" r="4" fill="#8998a6" />
-                  <circle cx="12" cy="52" r="2" fill="#ffffff" />
-                  <circle cx="88" cy="36" r="4" fill="#8998a6" />
-                  <circle cx="88" cy="36" r="2" fill="#ffffff" />
-                </svg>
-
-                {/* Live Glowing Cyan Player Position Smiley Pin */}
-                <div
-                  className="pointer-events-none absolute -translate-x-1/2 -translate-y-1/2 transition-all duration-200"
-                  style={{ left: `${playerPin.x}%`, top: `${playerPin.y}%` }}
-                >
-                  <div className="flex h-8 w-8 items-center justify-center rounded-full border-[3px] border-white bg-[#2dd4f7] text-white shadow-[0_0_0_5px_rgba(45,212,247,0.35)]">
-                    <span className="text-xs font-black">☺</span>
-                  </div>
-                </div>
-
-                {/* Partner Co-CEO Live Pin on Island Map */}
-                {onlineCeos
-                  .filter((c) => c.ceoSlot !== currentUser?.ceoSlot && c.activeView === 'island' && c.position)
-                  .map((partner) => {
-                    const pp = worldToMapPercent(partner.position![0], partner.position![2])
-                    return (
-                      <div
-                        key={partner.id}
-                        className="pointer-events-none absolute z-10 -translate-x-1/2 -translate-y-1/2 transition-all duration-200"
-                        style={{ left: `${pp.x}%`, top: `${pp.y}%` }}
-                        title={`${partner.name} (CEO)`}
-                      >
-                        <div className="flex h-8 w-8 items-center justify-center rounded-full border-[3px] border-white bg-[#f6b93b] text-xs shadow-[0_0_0_5px_rgba(246,185,59,0.35)]">
-                          👑
-                        </div>
-                      </div>
-                    )
-                  })}
-
-                {/* Clickable #3b3777 Teardrop Studio Pins (1:1 Coastal World Map Pins!) */}
-                {(Object.keys(COASTAL_STUDIO_LOCATIONS) as Exclude<StudioZoneId, 'editorial'>[]).map(
-                  (zoneId) => {
-                    const loc = COASTAL_STUDIO_LOCATIONS[zoneId]
-                    const owner = agents.find((a) => a.zone === zoneId)
-                    const active = selectedPinZone === zoneId
-                    return (
-                      <button
-                        key={zoneId}
-                        type="button"
-                        onClick={() => {
-                          coastalAudio.playPop(660, 0.06)
-                          setSelectedPinZone(active ? null : zoneId)
-                        }}
-                        className={`absolute -translate-x-1/2 -translate-y-full transition-transform ${
-                          active ? 'z-20 scale-115' : 'z-10 hover:scale-110'
-                        }`}
-                        style={{ left: `${loc.mapCoords.x}%`, top: `${loc.mapCoords.y}%` }}
-                      >
-                        <div className="relative flex h-12 w-12 items-center justify-center rounded-full rounded-br-sm -rotate-45 bg-[#3b3777] p-1 shadow-[0_10px_20px_rgba(32,40,86,0.36)]">
-                          <div className="flex h-full w-full rotate-45 flex-col items-center justify-center rounded-full bg-white text-center">
-                            <span
-                              className="h-2.5 w-2.5 rounded-full"
-                              style={{ backgroundColor: loc.badgeColor }}
-                            />
-                            <span className="mt-0.5 text-[8px] font-black leading-none text-[#3b3777]">
-                              {zoneId === 'b2b-lab' ? 'Sede' : owner?.name || STUDIO_ZONES[zoneId].shortName}
-                            </span>
-                          </div>
-                        </div>
-                      </button>
-                    )
-                  }
-                )}
-
-                {/* Bottom Studio Quick-Visit Card when a Map Pin is tapped */}
-                {selectedPinLoc && selectedPinMeta ? (
-                  <div className="cw-pop-in absolute inset-x-3 bottom-3 z-30 rounded-[24px] bg-white p-3.5 shadow-[0_14px_34px_rgba(24,42,88,0.28)]">
-                    <div className="flex items-start justify-between gap-2">
-                      <div>
-                        <p className="text-[11px] font-extrabold uppercase tracking-wide text-[#02c6a7]">
-                          {selectedPinZone === 'b2b-lab'
-                            ? 'Edifício Central'
-                            : selectedPinOwner
-                              ? `Estúdio de ${selectedPinOwner.name}`
-                              : 'Mini-Estúdio'}
-                        </p>
-                        <h3 className="text-sm font-black text-[#3b3777]">
-                          {selectedPinZone === 'b2b-lab'
-                            ? selectedPinMeta.name
-                            : selectedPinOwner?.studioTheme.studioName || selectedPinMeta.name}
-                        </h3>
-                      </div>
-                      <button
-                        type="button"
-                        onClick={() => setSelectedPinZone(null)}
-                        className="rounded-full bg-[#f1f4fa] p-1 text-[#3b3777]"
-                      >
-                        <X className="h-3.5 w-3.5" />
-                      </button>
-                    </div>
-                    <div className="mt-3 grid grid-cols-2 gap-2">
-                      <button
-                        type="button"
-                        onClick={() => {
-                          coastalAudio.playChime()
-                          teleportPlayerTo(selectedPinLoc.teleportPoint)
-                        }}
-                        className="flex items-center justify-center gap-1.5 rounded-full bg-[#eef4fb] py-2 text-xs font-extrabold text-[#3b3777] hover:bg-[#dfe9f7]"
-                      >
-                        <Compass className="h-3.5 w-3.5 text-[#3b82f6]" />
-                        Ir até lá
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          coastalAudio.playChime()
-                          enterStudioZone(selectedPinLoc.zoneId)
-                        }}
-                        className="flex items-center justify-center gap-1.5 rounded-full bg-[#02c6a7] py-2 text-xs font-extrabold text-white hover:brightness-105"
-                      >
-                        <Building2 className="h-3.5 w-3.5" />
-                        Entrar no Estúdio
-                      </button>
-                    </div>
-                  </div>
-                ) : (
-                  <div className="pointer-events-none absolute inset-x-4 bottom-3 rounded-full bg-white/92 px-4 py-2 text-center text-xs font-extrabold text-[#3b3777] shadow-md">
-                    Toque em um pin da Ilha Blequi para viajar
-                  </div>
-                )}
-              </div>
-            )}
+            {/* ================= TAB 1: MENSAGENS (grupos + conversas individuais) ================= */}
+            {phoneTab === 'messages' && <MessagesApp />}
 
             {/* ================= TAB 2: EQUIPE & ESTÚDIOS ================= */}
             {phoneTab === 'studios' && (
@@ -347,12 +176,7 @@ export function CoastalPhoneModal() {
                     >
                       <div className="flex items-center justify-between gap-2">
                         <div className="flex items-center gap-2.5 min-w-0">
-                          <span
-                            className="flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl text-sm font-black text-white shadow-sm"
-                            style={{ backgroundColor: ag.accentColor }}
-                          >
-                            {ag.name.slice(0, 1)}
-                          </span>
+                          <AgentPortrait agent={ag} size={40} showStatus />
                           <div className="min-w-0">
                             <p className="truncate text-sm font-black text-[#3b3777]">{ag.name}</p>
                             <p className="truncate text-[11px] font-semibold text-[#7976a3]">{ag.role}</p>
@@ -382,7 +206,10 @@ export function CoastalPhoneModal() {
                       <div className="mt-3 flex items-center gap-1.5">
                         <button
                           type="button"
-                          onClick={() => selectAgent(ag.id)}
+                          onClick={() => {
+                            setActiveThread({ kind: 'agent', id: ag.id })
+                            setPhoneTab('messages')
+                          }}
                           className="flex flex-1 items-center justify-center gap-1.5 rounded-full bg-[#f1f5fc] py-1.5 text-xs font-extrabold text-[#3b3777] hover:bg-[#e4ecf9]"
                         >
                           <MessageCircle className="h-3.5 w-3.5 text-[#3b82f6]" />

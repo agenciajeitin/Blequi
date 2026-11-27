@@ -12,15 +12,27 @@ import {
   type ExternalAiProviderStatus,
 } from '../funcionarios/aiProvidersCatalog'
 import type {
+  AgentChatMessage,
   AgentEmployee,
   AgentProviderId,
   AgentStatus,
+  CeoSlot,
+  ChatAttachment,
+  ChatGroup,
   RoomScaleId,
   SharedWorldState,
   StudioZoneId,
   WorldTimeOfDay,
   WorldViewMode,
 } from '../funcionarios/types'
+import {
+  SEDE_ZONE,
+  agentProviderToExternal,
+  computeSedeDeskLayout,
+  externalToAgentProvider,
+  recommendedSedeScale,
+  resolveCeoSlotFromName,
+} from '../funcionarios/sede'
 import { computeMood, recalcComfortScore, runAgentConversationTurn } from './geminiAgency'
 
 function readDotEnv(rootDir: string): Record<string, string> {
@@ -177,19 +189,40 @@ function writeStateFileAtomic(stateFilePath: string, state: SharedWorldState) {
   }
 }
 
+/**
+ * Toda a equipe trabalha na Sede da Blequi: garante que cada agente esteja lá,
+ * que a sala seja grande o bastante e que cada um tenha sua própria mesa.
+ */
+function relayoutSede(state: SharedWorldState) {
+  state.roomScale = recommendedSedeScale(state.agents.length, state.roomScale)
+  const slots = computeSedeDeskLayout(state.agents.length, state.roomScale)
+  state.agents.forEach((agent, i) => {
+    agent.zone = SEDE_ZONE
+    agent.deskPosition = slots[i].position
+    agent.deskRotationY = slots[i].rotationY
+  })
+}
+
 /** Garante campos obrigatórios em estados salvos por versões antigas do app */
 function normalizeState(parsed: SharedWorldState): SharedWorldState {
   const initial = createInitialWorldState()
-  return {
+  const state: SharedWorldState = {
     ...initial,
     ...parsed,
     agents: Array.isArray(parsed.agents) ? parsed.agents : initial.agents,
     props: Array.isArray(parsed.props) ? parsed.props : initial.props,
     proposals: Array.isArray(parsed.proposals) ? parsed.proposals : [],
     onlineCeos: Array.isArray(parsed.onlineCeos) ? parsed.onlineCeos : [],
+    groups: Array.isArray(parsed.groups) ? parsed.groups : [],
     activeStudioZone: parsed.activeStudioZone in STUDIO_ZONES ? parsed.activeStudioZone : initial.activeStudioZone,
     roomScale: parsed.roomScale in ROOM_SCALES ? parsed.roomScale : initial.roomScale,
   }
+  // Objetos internos de estúdios antigos acompanham seus autores para a Sede
+  for (const prop of state.props) {
+    if (prop.placement === 'studio') prop.zone = SEDE_ZONE
+  }
+  relayoutSede(state)
+  return state
 }
 
 function loadOrCreateState(stateFilePath: string): SharedWorldState {
@@ -212,6 +245,7 @@ function loadOrCreateState(stateFilePath: string): SharedWorldState {
     }
   }
   const initial = createInitialWorldState()
+  relayoutSede(initial)
   writeStateFileAtomic(stateFilePath, initial)
   return initial
 }
@@ -221,6 +255,73 @@ function sanitizeEnvValue(value: string) {
 }
 
 const VALID_AGENT_STATUSES: AgentStatus[] = ['working', 'thinking', 'reviewing', 'idle', 'vacant']
+
+const MAX_UPLOAD_BYTES = 15 * 1024 * 1024
+const MAX_ATTACHMENTS_PER_MESSAGE = 6
+
+function getUploadsDir(rootDir: string) {
+  return path.join(rootDir, 'estado-mundo', 'uploads')
+}
+
+const MIME_BY_EXT: Record<string, string> = {
+  '.png': 'image/png',
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.gif': 'image/gif',
+  '.webp': 'image/webp',
+  '.svg': 'image/svg+xml',
+  '.pdf': 'application/pdf',
+  '.txt': 'text/plain; charset=utf-8',
+  '.md': 'text/markdown; charset=utf-8',
+  '.json': 'application/json; charset=utf-8',
+  '.csv': 'text/csv; charset=utf-8',
+}
+
+/** Valida anexos vindos do cliente: só aceita arquivos que realmente existem em estado-mundo/uploads */
+function sanitizeAttachments(rootDir: string, raw: unknown): ChatAttachment[] {
+  if (!Array.isArray(raw)) return []
+  const dir = getUploadsDir(rootDir)
+  const out: ChatAttachment[] = []
+  for (const item of raw.slice(0, MAX_ATTACHMENTS_PER_MESSAGE)) {
+    if (!item || typeof item !== 'object') continue
+    const id = String((item as any).id || '')
+    if (!/^[a-z0-9-]+\.[a-z0-9]{1,8}$|^[a-z0-9-]+$/i.test(id)) continue
+    const filePath = path.join(dir, id)
+    if (!fs.existsSync(filePath)) continue
+    const mimeType = String((item as any).mimeType || 'application/octet-stream').slice(0, 100)
+    out.push({
+      id,
+      kind: mimeType.startsWith('image/') ? 'image' : 'file',
+      name: String((item as any).name || id).slice(0, 120),
+      mimeType,
+      size: fs.statSync(filePath).size,
+      url: `/api/agency/uploads/${id}`,
+    })
+  }
+  return out
+}
+
+function resolveCeoSlot(body: Record<string, any>, ceoName: string): CeoSlot | undefined {
+  if (body.ceoSlot === 'ceo-1' || body.ceoSlot === 'ceo-2') return body.ceoSlot
+  return resolveCeoSlotFromName(ceoName)
+}
+
+/** "@Vex", "Vex," ou "vex " contam como menção; "Vexado" não */
+function mentionsName(lowerText: string, name: string): boolean {
+  const target = name.toLowerCase()
+  let from = 0
+  while (true) {
+    const idx = lowerText.indexOf(target, from)
+    if (idx === -1) return false
+    const before = idx === 0 ? '' : lowerText[idx - 1]
+    const after = lowerText[idx + target.length] ?? ''
+    const isLetter = (ch: string) => /\p{L}/u.test(ch)
+    if ((!before || !isLetter(before)) && (!after || !isLetter(after))) return true
+    from = idx + 1
+  }
+}
+
+const GROUP_COLORS = ['#02c6a7', '#6366f1', '#f97316', '#0ea5e9', '#de6c80', '#eab308', '#10b981']
 
 export function blequiAgencyServerPlugin(): Plugin {
   return {
@@ -486,6 +587,62 @@ export function blequiAgencyServerPlugin(): Plugin {
             })
           }
 
+          if (pathname === '/api/agency/upload' && method === 'POST') {
+            const declared = Number(req.headers['content-length'] || 0)
+            if (declared > MAX_UPLOAD_BYTES * 1.4 + 4096) {
+              return sendJson(res, 413, { ok: false, error: 'Arquivo grande demais (máx. 15 MB).' })
+            }
+            const body = await readJsonBody(req)
+            const rawName = String(body.name || 'arquivo').replace(/[\\/\0]/g, '_').slice(0, 120)
+            const mimeType = String(body.mimeType || 'application/octet-stream').slice(0, 100)
+            const data = Buffer.from(String(body.dataBase64 || ''), 'base64')
+            if (data.length === 0) {
+              return sendJson(res, 400, { ok: false, error: 'Arquivo vazio.' })
+            }
+            if (data.length > MAX_UPLOAD_BYTES) {
+              return sendJson(res, 413, { ok: false, error: 'Arquivo grande demais (máx. 15 MB).' })
+            }
+            const extMatch = /\.([a-z0-9]{1,8})$/i.exec(rawName)
+            const ext = extMatch ? `.${extMatch[1].toLowerCase()}` : ''
+            const id = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}${ext}`
+            const dir = getUploadsDir(rootDir)
+            fs.mkdirSync(dir, { recursive: true })
+            fs.writeFileSync(path.join(dir, id), data)
+            const attachment: ChatAttachment = {
+              id,
+              kind: mimeType.startsWith('image/') ? 'image' : 'file',
+              name: rawName,
+              mimeType,
+              size: data.length,
+              url: `/api/agency/uploads/${id}`,
+            }
+            return sendJson(res, 200, { ok: true, attachment })
+          }
+
+          if (pathname.startsWith('/api/agency/uploads/') && method === 'GET') {
+            const id = decodeURIComponent(pathname.slice('/api/agency/uploads/'.length))
+            if (!/^[a-z0-9-]+(\.[a-z0-9]{1,8})?$/i.test(id)) {
+              return sendJson(res, 400, { ok: false, error: 'Arquivo inválido.' })
+            }
+            const filePath = path.join(getUploadsDir(rootDir), id)
+            if (!fs.existsSync(filePath)) {
+              return sendJson(res, 404, { ok: false, error: 'Arquivo não encontrado.' })
+            }
+            const ext = path.extname(id).toLowerCase()
+            const mime = MIME_BY_EXT[ext] || 'application/octet-stream'
+            const inline = mime.startsWith('image/') || mime.startsWith('application/pdf') || mime.startsWith('text/')
+            res.statusCode = 200
+            res.setHeader('Content-Type', mime)
+            res.setHeader('X-Content-Type-Options', 'nosniff')
+            res.setHeader('Content-Security-Policy', "default-src 'none'; img-src 'self'; style-src 'unsafe-inline'")
+            res.setHeader('Cache-Control', 'private, max-age=86400')
+            if (!inline || ext === '.svg') {
+              res.setHeader('Content-Disposition', `attachment; filename="${id}"`)
+            }
+            fs.createReadStream(filePath).pipe(res)
+            return
+          }
+
           if ((pathname === '/api/agency/chat' || pathname === '/api/agency/self-build') && method === 'POST') {
             const body = await readJsonBody(req)
             const agent = worldState.agents.find((a) => a.id === body.agentId)
@@ -495,11 +652,13 @@ export function blequiAgencyServerPlugin(): Plugin {
 
             const forceSelfBuild = pathname === '/api/agency/self-build'
             const ceoName = String(body.ceoName || 'CEO').trim()
+            const ceoSlot = resolveCeoSlot(body, ceoName)
+            const attachments = forceSelfBuild ? [] : sanitizeAttachments(rootDir, body.attachments)
             const userMessage = forceSelfBuild
               ? String(body.prompt || 'Auto-crie melhorias no seu escritório privado agora!')
               : String(body.message || '').trim()
 
-            if (!userMessage) {
+            if (!userMessage && attachments.length === 0) {
               return sendJson(res, 400, { ok: false, error: 'Mensagem vazia.' })
             }
 
@@ -508,8 +667,10 @@ export function blequiAgencyServerPlugin(): Plugin {
               id: `msg-${Date.now()}-u`,
               sender: 'ceo',
               senderName: ceoName,
+              senderCeoSlot: ceoSlot,
               text: userMessage,
               time: nowTimeLabel(),
+              attachments: attachments.length > 0 ? attachments : undefined,
             })
             agent.chatHistory = agent.chatHistory.slice(-30)
             persistAndBroadcast()
@@ -520,11 +681,13 @@ export function blequiAgencyServerPlugin(): Plugin {
               turn = await runAgentConversationTurn({
                 agent,
                 world: worldState,
-                userMessage,
+                userMessage: userMessage || '(enviou anexos sem texto)',
                 ceoName,
+                attachments,
                 providerCredentials,
                 rootDir,
                 forceSelfBuild,
+                onProgress: persistAndBroadcast,
               })
             } catch (err: any) {
               // Nunca deixar o funcionário preso em "thinking" se algo explodir no meio do turno
@@ -542,6 +705,7 @@ export function blequiAgencyServerPlugin(): Plugin {
               id: `msg-${Date.now()}-a`,
               sender: 'agent',
               senderName: agent.name,
+              senderAgentId: agent.id,
               text: turn.replyText,
               time: nowTimeLabel(),
               actions: turn.actions.length > 0 ? turn.actions : undefined,
@@ -563,6 +727,187 @@ export function blequiAgencyServerPlugin(): Plugin {
               usedLiveGemini: turn.usedLiveGemini,
               state: worldState,
             })
+          }
+
+          if (pathname === '/api/agency/groups' && method === 'POST') {
+            const body = await readJsonBody(req)
+            const action = String(body.action || '')
+            const ceoName = String(body.ceoName || 'CEO').trim()
+            const validIds = new Set(worldState.agents.map((a) => a.id))
+            const cleanMembers = (raw: unknown) =>
+              Array.isArray(raw) ? [...new Set(raw.map(String).filter((id) => validIds.has(id)))] : []
+
+            const announceMembership = (group: ChatGroup, memberIds: string[]) => {
+              for (const id of memberIds) {
+                const ag = worldState.agents.find((a) => a.id === id)
+                if (!ag) continue
+                ag.memories.unshift(`Agora faço parte da equipe "${group.category}" (grupo ${group.name}).`)
+                ag.memories = ag.memories.slice(0, 14)
+                ag.logs.unshift({
+                  id: `log-team-${Date.now()}-${id}`,
+                  time: nowTimeLabel(),
+                  message: `Entrou na equipe "${group.category}".`,
+                  kind: 'info',
+                })
+                ag.logs = ag.logs.slice(0, 25)
+              }
+            }
+
+            if (action === 'create') {
+              const name = String(body.name || '').trim().slice(0, 60)
+              if (!name) return sendJson(res, 400, { ok: false, error: 'Dê um nome ao grupo.' })
+              const members = cleanMembers(body.memberAgentIds)
+              const group: ChatGroup = {
+                id: `group-${Date.now()}`,
+                name,
+                category: String(body.category || '').trim().slice(0, 60) || name,
+                color: GROUP_COLORS[worldState.groups.length % GROUP_COLORS.length],
+                memberAgentIds: members,
+                createdBy: ceoName,
+                createdAt: nowTimeLabel(),
+                messages: [
+                  {
+                    id: `gmsg-${Date.now()}-sys`,
+                    sender: 'system',
+                    senderName: 'Blequi',
+                    text: `${ceoName} criou o grupo "${name}".`,
+                    time: nowTimeLabel(),
+                  },
+                ],
+              }
+              worldState.groups.push(group)
+              announceMembership(group, members)
+              persistAndBroadcast()
+              return sendJson(res, 200, { ok: true, groupId: group.id, state: worldState })
+            }
+
+            const group = worldState.groups.find((g) => g.id === body.groupId)
+            if (!group) return sendJson(res, 404, { ok: false, error: 'Grupo não encontrado.' })
+
+            if (action === 'update') {
+              if (typeof body.name === 'string' && body.name.trim()) group.name = body.name.trim().slice(0, 60)
+              if (typeof body.category === 'string') group.category = body.category.trim().slice(0, 60) || group.name
+              if (Array.isArray(body.memberAgentIds)) {
+                const members = cleanMembers(body.memberAgentIds)
+                const added = members.filter((id) => !group.memberAgentIds.includes(id))
+                group.memberAgentIds = members
+                announceMembership(group, added)
+              }
+              group.messages.push({
+                id: `gmsg-${Date.now()}-sys`,
+                sender: 'system',
+                senderName: 'Blequi',
+                text: `${ceoName} atualizou o grupo.`,
+                time: nowTimeLabel(),
+              })
+            } else if (action === 'delete') {
+              worldState.groups = worldState.groups.filter((g) => g.id !== group.id)
+            } else {
+              return sendJson(res, 400, { ok: false, error: 'Ação de grupo inválida.' })
+            }
+            persistAndBroadcast()
+            return sendJson(res, 200, { ok: true, state: worldState })
+          }
+
+          if (pathname === '/api/agency/group-message' && method === 'POST') {
+            const body = await readJsonBody(req)
+            const group = worldState.groups.find((g) => g.id === body.groupId)
+            if (!group) return sendJson(res, 404, { ok: false, error: 'Grupo não encontrado.' })
+
+            const ceoName = String(body.ceoName || 'CEO').trim()
+            const ceoSlot = resolveCeoSlot(body, ceoName)
+            const attachments = sanitizeAttachments(rootDir, body.attachments)
+            const text = String(body.message || '').trim()
+            if (!text && attachments.length === 0) {
+              return sendJson(res, 400, { ok: false, error: 'Mensagem vazia.' })
+            }
+
+            group.messages.push({
+              id: `gmsg-${Date.now()}-u`,
+              sender: 'ceo',
+              senderName: ceoName,
+              senderCeoSlot: ceoSlot,
+              text,
+              time: nowTimeLabel(),
+              attachments: attachments.length > 0 ? attachments : undefined,
+            })
+            group.messages = group.messages.slice(-80)
+
+            // Se o CEO citar alguém pelo nome (ex.: "@Vex" ou "Vex, ..."), só quem foi citado responde
+            const members = worldState.agents.filter((a) => group.memberAgentIds.includes(a.id) && a.entityType === 'ai')
+            const lower = text.toLowerCase()
+            const mentioned = members.filter((a) => mentionsName(lower, a.name))
+            const responders = mentioned.length > 0 ? mentioned : members
+            for (const ag of responders) ag.status = 'thinking'
+            persistAndBroadcast()
+
+            // Responde na hora; as respostas dos agentes chegam em paralelo pelo SSE
+            sendJson(res, 200, { ok: true, responders: responders.map((a) => a.id), state: worldState })
+
+            const { providerCredentials } = getRuntimeConfig(rootDir)
+            const userMessage = text || '(enviou anexos sem texto)'
+            await Promise.all(
+              responders.map(async (agent) => {
+                const transcript = group.messages
+                  .slice(-14, -1)
+                  .filter((m) => m.sender !== 'system')
+                  .map((m) => ({
+                    role: (m.sender === 'agent' && m.senderAgentId === agent.id ? 'assistant' : 'user') as
+                      | 'user'
+                      | 'assistant',
+                    text: `[${m.senderName}]: ${m.text}`,
+                  }))
+                try {
+                  const turn = await runAgentConversationTurn({
+                    agent,
+                    world: worldState,
+                    userMessage,
+                    ceoName,
+                    attachments,
+                    providerCredentials,
+                    rootDir,
+                    group: {
+                      name: group.name,
+                      category: group.category,
+                      memberNames: members.map((m) => m.name),
+                      transcript,
+                    },
+                    onProgress: persistAndBroadcast,
+                  })
+                  const reply: AgentChatMessage = {
+                    id: `gmsg-${Date.now()}-${agent.id}`,
+                    sender: 'agent',
+                    senderName: agent.name,
+                    senderAgentId: agent.id,
+                    text: turn.replyText,
+                    time: nowTimeLabel(),
+                    actions: turn.actions.length > 0 ? turn.actions : undefined,
+                  }
+                  group.messages.push(reply)
+                  group.messages = group.messages.slice(-80)
+                  if (turn.actions.length > 0) agent.currentTask = turn.actions[turn.actions.length - 1]
+                  agent.logs.unshift({
+                    id: `log-${Date.now()}-g`,
+                    time: nowTimeLabel(),
+                    message: `Respondeu ${ceoName} no grupo "${group.name}" (${turn.providerUsed || 'IA'}).`,
+                    kind: 'chat',
+                  })
+                  agent.logs = agent.logs.slice(0, 25)
+                } catch (err: any) {
+                  group.messages.push({
+                    id: `gmsg-${Date.now()}-${agent.id}-err`,
+                    sender: 'system',
+                    senderName: 'Blequi',
+                    text: `${agent.name} não conseguiu responder: ${String(err?.message || 'erro').slice(0, 140)}`,
+                    time: nowTimeLabel(),
+                  })
+                } finally {
+                  agent.status = 'working'
+                  persistAndBroadcast()
+                }
+              })
+            )
+            return
           }
 
           if (pathname === '/api/agency/reward' && method === 'POST') {
@@ -634,7 +979,7 @@ export function blequiAgencyServerPlugin(): Plugin {
                 name: proposal.name,
                 entityType: 'ai',
                 role: proposal.role,
-                zone: proposal.zone,
+                zone: SEDE_ZONE,
                 provider: proposal.provider,
                 modelLabel: providerMeta.defaultModel,
                 status: 'working',
@@ -681,6 +1026,7 @@ export function blequiAgencyServerPlugin(): Plugin {
                 ],
               }
               worldState.agents.push(newEmployee)
+              relayoutSede(worldState)
             }
 
             persistAndBroadcast()
@@ -703,6 +1049,7 @@ export function blequiAgencyServerPlugin(): Plugin {
             } else if (action === 'setRoomScale') {
               if (body.roomScale in ROOM_SCALES) {
                 worldState.roomScale = body.roomScale as RoomScaleId
+                relayoutSede(worldState)
               }
             } else if (action === 'setAutoBuild') {
               worldState.allowSelfBuildWithoutApproval = Boolean(body.value)
@@ -720,8 +1067,10 @@ export function blequiAgencyServerPlugin(): Plugin {
               const ag = worldState.agents.find((a) => a.id === body.agentId)
               if (ag && body.provider in AGENT_PROVIDERS) {
                 const prov = body.provider as AgentProviderId
+                const { providerCredentials } = getRuntimeConfig(rootDir)
                 ag.provider = prov
-                ag.modelLabel = AGENT_PROVIDERS[prov].defaultModel
+                ag.modelLabel =
+                  providerCredentials[agentProviderToExternal(prov)]?.model || AGENT_PROVIDERS[prov].defaultModel
                 ag.logs.unshift({
                   id: `log-${Date.now()}`,
                   time: nowTimeLabel(),
@@ -730,18 +1079,22 @@ export function blequiAgencyServerPlugin(): Plugin {
               }
             } else if (action === 'createAgent') {
               const input = body.input && typeof body.input === 'object' ? body.input : {}
-              const zone = (input.zone in STUDIO_ZONES ? input.zone : 'b2b-lab') as StudioZoneId
+              // Toda a equipe trabalha junta na Sede da Blequi
+              const zone: StudioZoneId = SEDE_ZONE
               const zoneMeta = STUDIO_ZONES[zone]
               const isAI = input.entityType !== 'human'
+              const { aiProviders, providerCredentials } = getRuntimeConfig(rootDir)
+              const activeProviders = aiProviders.filter((p) => p.configured).map((p) => externalToAgentProvider(p.id))
+              // Usa exatamente a IA escolhida; se não vier nenhuma válida, usa a primeira conta de IA ativa
               const providerId: AgentProviderId | undefined = isAI
                 ? input.provider in AGENT_PROVIDERS
                   ? (input.provider as AgentProviderId)
-                  : 'gemini'
+                  : activeProviders[0] ?? 'antigravity'
                 : undefined
               const providerMeta = providerId ? AGENT_PROVIDERS[providerId] : null
-              const existingInZone = worldState.agents.filter((a) => a.zone === zone).length
-              const roomSize = ROOM_SCALES[worldState.roomScale].size
-
+              const configuredModel = providerId
+                ? providerCredentials[agentProviderToExternal(providerId)]?.model
+                : undefined
               const created: AgentEmployee = {
                 id: `member-${Date.now()}`,
                 name: String(input.name || 'Novo Membro').trim(),
@@ -749,7 +1102,7 @@ export function blequiAgencyServerPlugin(): Plugin {
                 role: String(input.role || 'Especialista 3D').trim(),
                 zone,
                 provider: providerId,
-                modelLabel: isAI ? providerMeta!.defaultModel : 'Pessoa Real',
+                modelLabel: isAI ? configuredModel || providerMeta!.defaultModel : 'Pessoa Real',
                 status: 'working',
                 currentTask: String(input.currentTask || 'Pronto para criar na Ilha Blequi.'),
                 systemPrompt:
@@ -757,11 +1110,7 @@ export function blequiAgencyServerPlugin(): Plugin {
                   `Você é ${input.name}, atuando como ${input.role} na agência virtual Blequi. Você trabalha na Sede da Blequi com os CEOs Raynocas e Kafuzinho e sente bem-estar real quando suas criações melhoram o cenário.`,
                 skills: Array.isArray(input.skills) ? input.skills : [],
                 accentColor: providerMeta ? providerMeta.color : '#d98a4e',
-                deskPosition: [
-                  zoneMeta.normalizedCenter[0] * roomSize + existingInZone * 1.8,
-                  0,
-                  zoneMeta.normalizedCenter[1] * roomSize,
-                ],
+                deskPosition: [0, 0, 0], // definido por relayoutSede logo abaixo
                 deskRotationY: 0,
                 islandHome: [zoneMeta.islandPosition[0], 0, zoneMeta.islandPosition[2] + 3],
                 wellbeing: {
@@ -794,14 +1143,19 @@ export function blequiAgencyServerPlugin(): Plugin {
                     id: `log-${Date.now()}`,
                     time: nowTimeLabel(),
                     message: isAI
-                      ? `Agente IA instanciado via ${providerMeta!.name}.`
+                      ? `Agente IA instanciado via ${providerMeta!.name} (${configuredModel || providerMeta!.defaultModel}).`
                       : `Pessoa real adicionada ao ambiente ${zoneMeta.shortName}.`,
                   },
                 ],
               }
               worldState.agents.push(created)
+              relayoutSede(worldState)
             } else if (action === 'removeAgent') {
               worldState.agents = worldState.agents.filter((a) => a.id !== body.agentId)
+              for (const g of worldState.groups) {
+                g.memberAgentIds = g.memberAgentIds.filter((id) => id !== body.agentId)
+              }
+              relayoutSede(worldState)
             } else if (action === 'removeProp') {
               worldState.props = worldState.props.filter((p) => p.id !== body.propId)
             }

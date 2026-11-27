@@ -2,6 +2,8 @@ import { create } from 'zustand'
 import type {
   AgencyUserProfile,
   AgentEmployee,
+  ChatAttachment,
+  ChatGroup,
   AgentProviderId,
   AgentStatus,
   CoastalIntroStage,
@@ -178,6 +180,9 @@ interface AgencyState {
   speechBubble: SpeechBubbleState | null
 
   agents: AgentEmployee[]
+  groups: ChatGroup[]
+  /** Conversa aberta no app de mensagens do celular */
+  activeThread: { kind: 'group' | 'agent'; id: string } | null
   props: WorldCreationProp[]
   proposals: PendingEmployeeProposal[]
   onlineCeos: OnlineCeoPresence[]
@@ -232,7 +237,14 @@ interface AgencyState {
   setSettingsOpen: (open: boolean) => void
   showToast: (message: string) => void
 
-  sendChatMessage: (agentId: string, message: string) => Promise<void>
+  sendChatMessage: (agentId: string, message: string, attachments?: ChatAttachment[]) => Promise<void>
+  uploadAttachment: (file: File) => Promise<ChatAttachment | null>
+  attachmentUrl: (att: ChatAttachment) => string
+  setActiveThread: (thread: { kind: 'group' | 'agent'; id: string } | null) => void
+  createGroup: (input: { name: string; category: string; memberAgentIds: string[] }) => Promise<string | null>
+  updateGroup: (groupId: string, patch: { name?: string; category?: string; memberAgentIds?: string[] }) => Promise<void>
+  deleteGroup: (groupId: string) => Promise<void>
+  sendGroupMessage: (groupId: string, message: string, attachments?: ChatAttachment[]) => Promise<void>
   triggerSelfBuild: (agentId: string, customPrompt?: string) => Promise<void>
   rewardAgentOrProp: (opts: { agentId?: string; propId?: string; reason?: string }) => Promise<void>
   resolveProposal: (proposalId: string, approve: boolean) => Promise<void>
@@ -387,9 +399,11 @@ export const useAgencyStore = create<AgencyState>((set, get) => {
     }
     activeEventSource = es
 
-    presenceTimer = setInterval(() => {
+    // Batimento de presença com a posição atual: a outra CEO vê você mesmo se você estiver parada
+    const sendPresence = () => {
       const state = get()
       if (!state.hasEnteredAgency || !state.currentUser) return
+      const t = state.worldView === 'studio' ? studioPlayerLiveTransform : playerLiveTransform
       fetch('/api/agency/presence', {
         method: 'POST',
         headers: apiHeaders(),
@@ -400,9 +414,15 @@ export const useAgencyStore = create<AgencyState>((set, get) => {
           ceoSlot: state.currentUser.ceoSlot || 'ceo-1',
           activeView: state.worldView,
           activeZone: state.activeStudioZone,
+          position: [t.x, t.y, t.z],
+          rotationY: t.rotationY,
+          isMoving: t.isMoving,
+          avatar: state.playerAvatar,
         }),
       }).catch(() => {})
-    }, 25_000)
+    }
+    setTimeout(sendPresence, 1500)
+    presenceTimer = setInterval(sendPresence, 10_000)
   }
 
   return {
@@ -429,7 +449,7 @@ export const useAgencyStore = create<AgencyState>((set, get) => {
     playerAvatar: typeof window !== 'undefined' ? loadSavedAvatar() : DEFAULT_PLAYER_AVATAR,
     studioCameraMode: 'walk',
     isPhoneOpen: false,
-    phoneTab: 'map',
+    phoneTab: 'messages',
     isMenuOpen: false,
     isCustomizerOpen: false,
     soundEnabled: false,
@@ -439,6 +459,8 @@ export const useAgencyStore = create<AgencyState>((set, get) => {
     speechBubble: null,
 
     agents: initialWorld.agents,
+    groups: initialWorld.groups,
+    activeThread: null,
     props: initialWorld.props,
     proposals: initialWorld.proposals,
     onlineCeos: initialWorld.onlineCeos,
@@ -539,6 +561,12 @@ export const useAgencyStore = create<AgencyState>((set, get) => {
         comfortScore: shared.comfortScore,
         allowSelfBuildWithoutApproval: shared.allowSelfBuildWithoutApproval,
         agents: shared.agents,
+        groups: Array.isArray(shared.groups) ? shared.groups : [],
+        activeThread:
+          state.activeThread?.kind === 'group' &&
+          !(shared.groups ?? []).some((g) => g.id === state.activeThread?.id)
+            ? null
+            : state.activeThread,
         props: shared.props,
         proposals: shared.proposals,
         onlineCeos: shared.onlineCeos,
@@ -584,11 +612,16 @@ export const useAgencyStore = create<AgencyState>((set, get) => {
 
     quickStartJourney: async () => {
       const saved = get().currentUser
+      // Navegador novo (ex.: PC do Kafuzinho): pede o login em vez de entrar como Raynocas por engano
+      if (!saved?.name) {
+        set({ isCeoLoginOpen: true })
+        return
+      }
       const code = get().ceoCode || 'blequi-ceo'
       const result = await get().enterAgency({
-        name: saved?.name || 'Raynocas',
+        name: saved.name,
         entityType: 'human',
-        role: saved?.role || 'CEO · Ambientação & Estética',
+        role: saved.role || 'CEO',
         skills: saved?.skills?.length ? saved.skills : ['Direção de Arte', 'Diorama 3D'],
         roomScale: get().roomScale,
         ceoSlot: saved?.ceoSlot || 'ceo-1',
@@ -608,6 +641,8 @@ export const useAgencyStore = create<AgencyState>((set, get) => {
         worldView: 'island',
         speechBubble: null,
       })
+      const t = playerLiveTransform
+      get().broadcastCeoMove([t.x, t.y, t.z], t.rotationY, false)
     },
 
     enterAgency: async (input) => {
@@ -860,14 +895,15 @@ export const useAgencyStore = create<AgencyState>((set, get) => {
     setCreateModalOpen: (open) => set({ isCreateModalOpen: open, isMenuOpen: false, isPhoneOpen: false }),
     setSettingsOpen: (open) => set({ isSettingsOpen: open, isMenuOpen: false, isPhoneOpen: false }),
 
-    sendChatMessage: async (agentId, message) => {
+    sendChatMessage: async (agentId, message, attachments) => {
       const ceoName = get().currentUser?.name || 'CEO'
+      const ceoSlot = get().currentUser?.ceoSlot
       set((s) => ({ chatPendingByAgent: { ...s.chatPendingByAgent, [agentId]: true } }))
       try {
         const res = await fetch('/api/agency/chat', {
           method: 'POST',
           headers: apiHeaders(),
-          body: JSON.stringify({ agentId, message, ceoName }),
+          body: JSON.stringify({ agentId, message, ceoName, ceoSlot, attachments }),
         })
         const data = await res.json()
         if (data.state) get().applySharedState(data.state)
@@ -881,6 +917,116 @@ export const useAgencyStore = create<AgencyState>((set, get) => {
         get().showToast('⚠️ Sem conexão com o servidor local da Blequi.')
       } finally {
         set((s) => ({ chatPendingByAgent: { ...s.chatPendingByAgent, [agentId]: false } }))
+      }
+    },
+
+    uploadAttachment: async (file) => {
+      if (file.size > 15 * 1024 * 1024) {
+        get().showToast(`⚠️ "${file.name}" passa de 15 MB.`)
+        return null
+      }
+      try {
+        const dataBase64 = await new Promise<string>((resolve, reject) => {
+          const reader = new FileReader()
+          reader.onload = () => resolve(String(reader.result).split(',')[1] ?? '')
+          reader.onerror = () => reject(reader.error)
+          reader.readAsDataURL(file)
+        })
+        const res = await fetch('/api/agency/upload', {
+          method: 'POST',
+          headers: apiHeaders(),
+          body: JSON.stringify({
+            name: file.name,
+            mimeType: file.type || 'application/octet-stream',
+            dataBase64,
+          }),
+        })
+        const data = await res.json()
+        if (!res.ok || !data.ok) {
+          get().showToast(`⚠️ ${data.error || 'Não consegui enviar o arquivo.'}`)
+          return null
+        }
+        return data.attachment as ChatAttachment
+      } catch {
+        get().showToast('⚠️ Sem conexão para enviar o arquivo.')
+        return null
+      }
+    },
+
+    attachmentUrl: (att) => `${att.url}?code=${encodeURIComponent(get().ceoCode)}`,
+
+    setActiveThread: (activeThread) => set({ activeThread }),
+
+    createGroup: async (input) => {
+      try {
+        const res = await fetch('/api/agency/groups', {
+          method: 'POST',
+          headers: apiHeaders(),
+          body: JSON.stringify({ action: 'create', ceoName: get().currentUser?.name || 'CEO', ...input }),
+        })
+        const data = await res.json()
+        if (data.state) get().applySharedState(data.state)
+        if (!res.ok || !data.ok) {
+          get().showToast(`⚠️ ${data.error || 'Não consegui criar o grupo.'}`)
+          return null
+        }
+        return String(data.groupId)
+      } catch {
+        get().showToast('⚠️ Sem conexão com o servidor local da Blequi.')
+        return null
+      }
+    },
+
+    updateGroup: async (groupId, patch) => {
+      try {
+        const res = await fetch('/api/agency/groups', {
+          method: 'POST',
+          headers: apiHeaders(),
+          body: JSON.stringify({ action: 'update', groupId, ceoName: get().currentUser?.name || 'CEO', ...patch }),
+        })
+        const data = await res.json()
+        if (data.state) get().applySharedState(data.state)
+      } catch {
+        get().showToast('⚠️ Sem conexão com o servidor local da Blequi.')
+      }
+    },
+
+    deleteGroup: async (groupId) => {
+      try {
+        const res = await fetch('/api/agency/groups', {
+          method: 'POST',
+          headers: apiHeaders(),
+          body: JSON.stringify({ action: 'delete', groupId }),
+        })
+        const data = await res.json()
+        if (data.state) get().applySharedState(data.state)
+        set((s) => ({ activeThread: s.activeThread?.id === groupId ? null : s.activeThread }))
+      } catch {
+        get().showToast('⚠️ Sem conexão com o servidor local da Blequi.')
+      }
+    },
+
+    sendGroupMessage: async (groupId, message, attachments) => {
+      const user = get().currentUser
+      try {
+        const res = await fetch('/api/agency/group-message', {
+          method: 'POST',
+          headers: apiHeaders(),
+          body: JSON.stringify({
+            groupId,
+            message,
+            attachments,
+            ceoName: user?.name || 'CEO',
+            ceoSlot: user?.ceoSlot,
+          }),
+        })
+        const data = await res.json()
+        if (data.state) get().applySharedState(data.state)
+        if (!res.ok || data.ok === false) {
+          get().showToast(`⚠️ ${data.error || 'Não consegui enviar no grupo.'}`)
+        }
+      } catch {
+        get().showToast('⚠️ Sem conexão com o servidor local da Blequi.')
       }
     },
 

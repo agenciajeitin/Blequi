@@ -24,3 +24,6 @@ desktop.ini
 # Temporary AI scratchpad & auto-edit backups
 _rascunhos-ia/
 .blequi-backups/
+
+# Arquivos e fotos enviados nas conversas (ficam só no PC host)
+estado-mundo/uploads/

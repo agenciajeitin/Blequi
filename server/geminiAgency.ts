@@ -4,6 +4,7 @@ import { GoogleGenAI } from '@google/genai'
 import type {
   AgentEmployee,
   AgentMood,
+  ChatAttachment,
   AgentProviderId,
   PendingEmployeeProposal,
   SharedWorldState,
@@ -13,9 +14,93 @@ import type {
 } from '../funcionarios/types'
 import { PROP_CATALOG, STUDIO_ZONES } from '../funcionarios/providers'
 import type { ExternalAiProviderId } from '../funcionarios/aiProvidersCatalog'
+import { agentProviderToExternal } from '../funcionarios/sede'
 import type { ProviderCredential } from './agencyPlugin'
 
 const GEMINI_MODEL = 'gemini-3.8-flash'
+
+/** Máximo de idas e voltas de ferramentas por resposta (cada rodada é uma chamada completa ao modelo) */
+const MAX_TOOL_ROUNDS = 6
+/** Tempo máximo de cada chamada HTTP a um provedor de IA antes de desistir/tentar outro */
+const PROVIDER_REQUEST_TIMEOUT_MS = 75_000
+
+export interface GroupConversationContext {
+  name: string
+  category: string
+  memberNames: string[]
+  transcript: { role: 'user' | 'assistant'; text: string }[]
+}
+
+interface PreparedImage {
+  mimeType: string
+  base64: string
+}
+
+interface PreparedAttachments {
+  note: string
+  images: PreparedImage[]
+}
+
+const MODEL_IMAGE_MIMES = new Set(['image/png', 'image/jpeg', 'image/webp', 'image/gif'])
+const TEXT_ATTACHMENT_EXTS = new Set(['.txt', '.md', '.json', '.csv', '.ts', '.tsx', '.js', '.css', '.html', '.glsl', '.yml', '.yaml'])
+
+/** Lê os anexos do disco: imagens vão como entrada multimodal e textos curtos são colados na mensagem */
+function prepareAttachments(rootDir: string, attachments: ChatAttachment[] = []): PreparedAttachments {
+  if (attachments.length === 0) return { note: '', images: [] }
+  const lines: string[] = []
+  const images: PreparedImage[] = []
+  const dir = path.join(rootDir, 'estado-mundo', 'uploads')
+  for (const att of attachments) {
+    const filePath = path.join(dir, path.basename(att.id))
+    if (!fs.existsSync(filePath)) continue
+    const sizeKb = Math.max(1, Math.round(att.size / 1024))
+    const ext = path.extname(att.name || att.id).toLowerCase()
+    if (MODEL_IMAGE_MIMES.has(att.mimeType) && att.size <= 4 * 1024 * 1024 && images.length < 4) {
+      images.push({ mimeType: att.mimeType, base64: fs.readFileSync(filePath).toString('base64') })
+      lines.push(`- Imagem "${att.name}" (${sizeKb} KB) — anexada abaixo para você ver.`)
+    } else if ((att.mimeType.startsWith('text/') || TEXT_ATTACHMENT_EXTS.has(ext)) && att.size <= 200 * 1024) {
+      const content = fs.readFileSync(filePath, 'utf-8').slice(0, 20000)
+      lines.push(`- Arquivo "${att.name}" (${sizeKb} KB):\n\`\`\`\n${content}\n\`\`\``)
+    } else {
+      lines.push(`- Arquivo "${att.name}" (${att.mimeType}, ${sizeKb} KB) — não consigo abrir este formato, só sei que foi enviado.`)
+    }
+  }
+  return {
+    note: lines.length > 0 ? `\n\n[Anexos enviados na conversa]\n${lines.join('\n')}` : '',
+    images,
+  }
+}
+
+/** fetch com tempo limite para nunca deixar o agente "pensando" para sempre */
+async function fetchWithTimeout(url: string, init: RequestInit): Promise<Response> {
+  try {
+    return await fetch(url, { ...init, signal: AbortSignal.timeout(PROVIDER_REQUEST_TIMEOUT_MS) })
+  } catch (err: any) {
+    if (err?.name === 'TimeoutError' || err?.name === 'AbortError') {
+      throw new Error(`tempo esgotado (${Math.round(PROVIDER_REQUEST_TIMEOUT_MS / 1000)}s)`)
+    }
+    throw err
+  }
+}
+
+function withTimeout<T>(promise: Promise<T>, label: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(
+      () => reject(new Error(`${label}: tempo esgotado (${Math.round(PROVIDER_REQUEST_TIMEOUT_MS / 1000)}s)`)),
+      PROVIDER_REQUEST_TIMEOUT_MS
+    )
+    promise.then(
+      (v) => {
+        clearTimeout(timer)
+        resolve(v)
+      },
+      (e) => {
+        clearTimeout(timer)
+        reject(e)
+      }
+    )
+  })
+}
 
 const VALID_PROP_KINDS = Object.keys(PROP_CATALOG) as WorldPropKind[]
 const VALID_ZONES = Object.keys(STUDIO_ZONES) as StudioZoneId[]
@@ -139,30 +224,21 @@ function finiteOrUndefined(value: unknown): number | undefined {
 function pickSafePropPosition(
   state: SharedWorldState,
   placement: 'studio' | 'island',
-  zone: StudioZoneId,
+  agent: AgentEmployee,
   preferredX?: number,
   preferredZ?: number
 ): [number, number, number] {
-  const existing = state.props.filter((p) => p.placement === placement && (placement === 'island' || p.zone === zone))
+  const existing = state.props.filter(
+    (p) => p.placement === placement && (placement === 'island' || p.createdByAgentId === agent.id)
+  )
   const idx = existing.length
 
   if (placement === 'studio') {
-    if (typeof preferredX === 'number' && typeof preferredZ === 'number') {
-      return [clamp(preferredX, -4.5, 4.5), 0, clamp(preferredZ, -4.5, 4.5)]
-    }
-    const slots: [number, number][] = [
-      [3.1, -2.4],
-      [-3.2, -2.5],
-      [3.3, 2.2],
-      [-3.2, 2.5],
-      [0.2, 3.3],
-      [3.8, 0.1],
-      [-3.8, 0.2],
-      [0.4, -3.4],
-    ]
-    const slot = slots[idx % slots.length]
-    const jitter = Math.floor(idx / slots.length) * 0.65
-    return [clamp(slot[0] + jitter, -4.6, 4.6), 0, clamp(slot[1] - jitter * 0.5, -4.6, 4.6)]
+    // Cada agente decora o próprio cantinho: os objetos ficam em volta da sua mesa na Sede
+    const [deskX, , deskZ] = agent.deskPosition
+    const angle = idx * 1.25 + 0.6
+    const radius = 1.9 + Math.floor(idx / 5) * 0.8
+    return [Number((deskX + Math.cos(angle) * radius).toFixed(2)), 0, Number((deskZ + Math.sin(angle) * radius).toFixed(2))]
   }
 
   // Island placement around central plaza and walkways (keeping clear of buildings)
@@ -186,9 +262,21 @@ function pickSafePropPosition(
 function buildWorldAwareSystemPrompt(
   agent: AgentEmployee,
   world: SharedWorldState,
-  ceoName: string
+  ceoName: string,
+  group?: GroupConversationContext
 ): string {
-  const studioProps = world.props.filter((p) => p.placement === 'studio' && p.zone === agent.zone)
+  const studioProps = world.props.filter((p) => p.placement === 'studio' && p.createdByAgentId === agent.id)
+  const myTeams = (world.groups ?? [])
+    .filter((g) => g.memberAgentIds.includes(agent.id))
+    .map((g) => g.category)
+  const groupNote = group
+    ? `
+=== VOCÊ ESTÁ EM UM GRUPO DE CONVERSA ===
+- Grupo "${group.name}" (equipe: ${group.category}). Participantes: CEOs Raynocas e Kafuzinho + ${group.memberNames.join(', ')}.
+- As mensagens chegam no formato "[Nome]: texto". Responda apenas a SUA parte, em 1 a 2 parágrafos curtos, sem repetir o que colegas já disseram.
+- Se o pedido não for da sua área, diga em uma frase quem do grupo deve cuidar e não invente trabalho.
+`
+    : ''
   const islandProps = world.props.filter((p) => p.placement === 'island')
   const colleagues = world.agents
     .filter((a) => a.id !== agent.id)
@@ -214,8 +302,9 @@ function buildWorldAwareSystemPrompt(
 - Objetos que já existem no SEU espaço: ${studioProps.length > 0 ? studioProps.map((p) => `${p.title} (${p.kind}, ${p.approved ? 'aprovado' : 'aguardando aprovação'})`).join(', ') : 'ainda vazio'}.
 - Objetos na praça da Ilha: ${islandProps.length > 0 ? islandProps.map((p) => `${p.title} (${p.kind})`).join(', ') : 'praça limpa'}.
 - Seus colegas na Sede da Blequi: ${colleagues || 'você é a pioneira por enquanto'}.
+- Suas equipes: ${myTeams.length > 0 ? myTeams.join(', ') : 'nenhuma equipe definida ainda'}.
 - Suas memórias recentes: ${agent.memories.slice(0, 5).join(' | ')}.
-
+${groupNote}
 REGRAS DE COMPORTAMENTO:
 1. Fale como quem realmente habita a Sede da Blequi com carinho, consciência espacial e parceria exclusiva com os CEOs Raynocas e Kafuzinho.
 2. EDIÇÃO AUTOMÁTICA DE CÓDIGO AO VIVO: Você tem acesso direto para ler, alterar e salvar o código real do projeto com as ferramentas list_project_files, read_project_file, edit_project_code e create_project_file! Sempre que um CEO pedir mudanças reais na ilha, água, plantas, luz, prédios, interiores, física/hitboxes, personagens, acessórios, animações ou UI:
@@ -236,7 +325,8 @@ REGRAS DE COMPORTAMENTO:
      * Tarefas e projetos: projetos/TAREFAS.md e projetos/catalog.ts
    - Sempre respeite as regras de 60 FPS: no máximo 1 directionalLight com castShadow por cena, usar InstancedMesh para repetições, fazer .dispose() em geometrias/texturas criadas dinamicamente e manter TypeScript válido.
 3. Use consult_colleague sempre que precisar conversar, pedir ajuda ou dividir trabalho com Luma, Kael, Vex ou Nori — vocês trabalham juntos como um time unido.
-4. Mantenha respostas concisas (2 a 4 parágrafos curtos, em português do Brasil) informando exatamente quais arquivos foram alterados e salvos.`
+4. Mantenha respostas concisas (2 a 4 parágrafos curtos, em português do Brasil) informando exatamente quais arquivos foram alterados e salvos.
+5. Agilidade: para conversa, dúvidas ou opiniões responda direto, SEM chamar ferramentas. Só use ferramentas quando o CEO pedir para criar, alterar ou construir algo — e então leia apenas o trecho necessário do arquivo (startLine/endLine) e faça poucas edições bem certeiras.`
 }
 
 const AGENCY_TOOLS = [
@@ -273,11 +363,11 @@ const AGENCY_TOOLS = [
         },
         x: {
           type: 'number',
-          description: 'Posição opcional X (-4.2 a 4.2 no estúdio, -9 a 9 na ilha).',
+          description: 'Posição opcional X na ilha (-9 a 9). No estúdio o objeto vai automaticamente para perto da sua mesa.',
         },
         z: {
           type: 'number',
-          description: 'Posição opcional Z (-4.2 a 4.2 no estúdio, -9 a 9 na ilha).',
+          description: 'Posição opcional Z na ilha (-9 a 9). No estúdio o objeto vai automaticamente para perto da sua mesa.',
         },
       },
       required: ['kind', 'title', 'description', 'placement'],
@@ -472,7 +562,7 @@ function executeAgentTool(
     const kind: WorldPropKind = VALID_PROP_KINDS.includes(rawKind) ? rawKind : 'warm_lamp'
     const catalog = PROP_CATALOG[kind]
     const placement = args.placement === 'island' ? 'island' : 'studio'
-    const position = pickSafePropPosition(world, placement, agent.zone, finiteOrUndefined(args.x), finiteOrUndefined(args.z))
+    const position = pickSafePropPosition(world, placement, agent, finiteOrUndefined(args.x), finiteOrUndefined(args.z))
     const approved = world.allowSelfBuildWithoutApproval && placement === 'studio'
 
     const prop: WorldCreationProp = {
@@ -959,13 +1049,6 @@ function runOfflineSimulationTurn(
   }
 }
 
-function mapAgentProviderToExternal(provider?: AgentProviderId): ExternalAiProviderId {
-  if (provider === 'claude') return 'claude'
-  if (provider === 'opencode') return 'opencode'
-  if (provider === 'codex') return 'openai'
-  return 'antigravity'
-}
-
 const PROVIDER_DISPLAY_NAME: Record<ExternalAiProviderId, string> = {
   antigravity: 'Antigravity',
   opencode: 'OpenCode',
@@ -973,38 +1056,82 @@ const PROVIDER_DISPLAY_NAME: Record<ExternalAiProviderId, string> = {
   claude: 'Claude',
 }
 
-function buildRecentChatContext(agent: AgentEmployee): { role: 'user' | 'assistant'; text: string }[] {
-  const out: { role: 'user' | 'assistant'; text: string }[] = []
-  // Skip the very last message because it is the current userMessage we pass explicitly
-  const history = agent.chatHistory.slice(0, -1).slice(-8)
-  for (const m of history) {
-    if (m.sender === 'system') continue
-    const role: 'user' | 'assistant' = m.sender === 'ceo' ? 'user' : 'assistant'
-    const text = m.sender === 'ceo' ? `[${m.senderName}]: ${m.text}` : m.text
-    if (out.length > 0 && out[out.length - 1].role === role) {
-      out[out.length - 1].text += `\n${text}`
+type ContextTurn = { role: 'user' | 'assistant'; text: string }
+
+/** Junta falas consecutivas do mesmo papel e garante que comece com "user" (exigência da Anthropic) */
+function normalizeContext(list: ContextTurn[]): ContextTurn[] {
+  const out: ContextTurn[] = []
+  for (const m of list) {
+    if (out.length > 0 && out[out.length - 1].role === m.role) {
+      out[out.length - 1].text += `\n${m.text}`
     } else {
-      out.push({ role, text })
+      out.push({ role: m.role, text: m.text })
     }
   }
-  // Ensure history starts with a user message for strict APIs (Anthropic)
-  while (out.length > 0 && out[0].role !== 'user') {
-    out.shift()
-  }
+  while (out.length > 0 && out[0].role !== 'user') out.shift()
   return out
 }
 
-async function runOpenAiCompatibleTurn(params: {
-  providerLabel: string
+function buildRecentChatContext(agent: AgentEmployee): ContextTurn[] {
+  // Skip the very last message because it is the current userMessage we pass explicitly
+  const history = agent.chatHistory.slice(0, -1).slice(-8)
+  const list: ContextTurn[] = []
+  for (const m of history) {
+    if (m.sender === 'system') continue
+    list.push({
+      role: m.sender === 'ceo' ? 'user' : 'assistant',
+      text: m.sender === 'ceo' ? `[${m.senderName}]: ${m.text}` : m.text,
+    })
+  }
+  return normalizeContext(list)
+}
+
+interface ProviderTurnParams {
   cred: ProviderCredential
   agent: AgentEmployee
   world: SharedWorldState
   ceoName: string
   promptText: string
+  images: PreparedImage[]
+  context: ContextTurn[]
+  group?: GroupConversationContext
   rootDir: string
   actions: string[]
-}): Promise<{ replyText: string }> {
-  const { providerLabel, cred, agent, world, ceoName, promptText, rootDir, actions } = params
+  onProgress?: () => void
+}
+
+/** Executa as ferramentas de uma rodada e avisa a interface na hora (os CEOs veem o progresso ao vivo) */
+function runToolBatch(
+  calls: { name: string; args: Record<string, any> }[],
+  p: ProviderTurnParams
+): string[] {
+  const results = calls.map((call) => {
+    const outcome = executeAgentTool(call.name, call.args ?? {}, p.agent, p.world, p.rootDir)
+    if (outcome.actionBadge) p.actions.push(outcome.actionBadge)
+    return outcome.summaryText
+  })
+  if (p.actions.length > 0) {
+    p.agent.currentTask = `Trabalhando: ${p.actions[p.actions.length - 1]}`
+  }
+  try {
+    p.onProgress?.()
+  } catch {
+    /* progresso é só visual */
+  }
+  return results
+}
+
+function fallbackReply(p: ProviderTurnParams, finalText: string) {
+  return (
+    finalText ||
+    (p.actions.length > 0
+      ? `Prontinho, ${p.ceoName}! Apliquei e salvei: ${p.actions.join(', ')}.`
+      : `Recebido, ${p.ceoName}! Estou aqui na Sede da Blequi pronto(a) para agir.`)
+  )
+}
+
+async function runOpenAiCompatibleTurn(p: ProviderTurnParams & { providerLabel: string }): Promise<{ replyText: string }> {
+  const { providerLabel, cred, agent, world, ceoName, promptText, images, context, group } = p
   const endpoint = `${cred.baseUrl.replace(/\/+$/, '')}/chat/completions`
 
   const openAiTools = AGENCY_TOOLS.map((t) => ({
@@ -1016,19 +1143,29 @@ async function runOpenAiCompatibleTurn(params: {
     },
   }))
 
-  const recent = buildRecentChatContext(agent)
+  const userContent =
+    images.length > 0
+      ? [
+          { type: 'text', text: promptText },
+          ...images.map((img) => ({
+            type: 'image_url',
+            image_url: { url: `data:${img.mimeType};base64,${img.base64}` },
+          })),
+        ]
+      : promptText
+
   const messages: Record<string, any>[] = [
-    { role: 'system', content: buildWorldAwareSystemPrompt(agent, world, ceoName) },
-    ...recent.map((m) => ({ role: m.role, content: m.text })),
-    { role: 'user', content: promptText },
+    { role: 'system', content: buildWorldAwareSystemPrompt(agent, world, ceoName, group) },
+    ...context.map((m) => ({ role: m.role, content: m.text })),
+    { role: 'user', content: userContent },
   ]
 
   let finalText = ''
-  for (let round = 0; round < 8; round++) {
+  for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
     // Refresh system prompt so agent sees updated world state after tool calls
-    messages[0] = { role: 'system', content: buildWorldAwareSystemPrompt(agent, world, ceoName) }
+    messages[0] = { role: 'system', content: buildWorldAwareSystemPrompt(agent, world, ceoName, group) }
 
-    const res = await fetch(endpoint, {
+    const res = await fetchWithTimeout(endpoint, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -1072,8 +1209,7 @@ async function runOpenAiCompatibleTurn(params: {
       tool_calls: toolCalls,
     })
 
-    for (const call of toolCalls) {
-      const fnName = String(call?.function?.name || '')
+    const parsedCalls = toolCalls.map((call: any) => {
       let parsedArgs: Record<string, any> = {}
       try {
         parsedArgs =
@@ -1083,35 +1219,19 @@ async function runOpenAiCompatibleTurn(params: {
       } catch {
         parsedArgs = {}
       }
-      const outcome = executeAgentTool(fnName, parsedArgs, agent, world, rootDir)
-      if (outcome.actionBadge) actions.push(outcome.actionBadge)
-      messages.push({
-        role: 'tool',
-        tool_call_id: call.id,
-        content: outcome.summaryText,
-      })
-    }
+      return { name: String(call?.function?.name || ''), args: parsedArgs }
+    })
+    const results = runToolBatch(parsedCalls, p)
+    toolCalls.forEach((call: any, i: number) => {
+      messages.push({ role: 'tool', tool_call_id: call.id, content: results[i] })
+    })
   }
 
-  return {
-    replyText:
-      finalText ||
-      (actions.length > 0
-        ? `Prontinho, ${ceoName}! Apliquei e salvei: ${actions.join(', ')}.`
-        : `Recebido, ${ceoName}! Estou aqui na Sede da Blequi pronto(a) para agir.`),
-  }
+  return { replyText: fallbackReply(p, finalText) }
 }
 
-async function runAnthropicTurn(params: {
-  cred: ProviderCredential
-  agent: AgentEmployee
-  world: SharedWorldState
-  ceoName: string
-  promptText: string
-  rootDir: string
-  actions: string[]
-}): Promise<{ replyText: string }> {
-  const { cred, agent, world, ceoName, promptText, rootDir, actions } = params
+async function runAnthropicTurn(p: ProviderTurnParams): Promise<{ replyText: string }> {
+  const { cred, agent, world, ceoName, promptText, images, context, group } = p
   const endpoint = `${cred.baseUrl.replace(/\/+$/, '')}/messages`
 
   const claudeTools = AGENCY_TOOLS.map((t) => ({
@@ -1120,20 +1240,25 @@ async function runAnthropicTurn(params: {
     input_schema: t.parameters,
   }))
 
-  const recent = buildRecentChatContext(agent)
-  const messages: Record<string, any>[] = [
-    ...recent.map((m) => ({ role: m.role, content: m.text })),
-    { role: 'user', content: promptText },
+  const userContent: any[] = [
+    ...images.map((img) => ({
+      type: 'image',
+      source: { type: 'base64', media_type: img.mimeType, data: img.base64 },
+    })),
+    { type: 'text', text: promptText },
   ]
-  // Merge consecutive user messages if recent ended on user
-  if (messages.length >= 2 && messages[messages.length - 2].role === 'user') {
+
+  const messages: Record<string, any>[] = context.map((m) => ({ role: m.role, content: m.text }))
+  // Mensagens precisam alternar: se o contexto terminou em "user", junta tudo numa fala só
+  if (messages.length > 0 && messages[messages.length - 1].role === 'user') {
     const last = messages.pop()!
-    messages[messages.length - 1].content = `${messages[messages.length - 1].content}\n\n${last.content}`
+    userContent.unshift({ type: 'text', text: String(last.content) })
   }
+  messages.push({ role: 'user', content: userContent })
 
   let finalText = ''
-  for (let round = 0; round < 8; round++) {
-    const res = await fetch(endpoint, {
+  for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
+    const res = await fetchWithTimeout(endpoint, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -1143,7 +1268,7 @@ async function runAnthropicTurn(params: {
       body: JSON.stringify({
         model: cred.model,
         max_tokens: 4096,
-        system: buildWorldAwareSystemPrompt(agent, world, ceoName),
+        system: buildWorldAwareSystemPrompt(agent, world, ceoName, group),
         tools: claudeTools,
         messages,
       }),
@@ -1175,93 +1300,102 @@ async function runAnthropicTurn(params: {
     }
 
     messages.push({ role: 'assistant', content: contentBlocks })
-    const toolResults = toolUses.map((call: any) => {
-      const outcome = executeAgentTool(String(call.name || ''), call.input ?? {}, agent, world, rootDir)
-      if (outcome.actionBadge) actions.push(outcome.actionBadge)
-      return {
+    const results = runToolBatch(
+      toolUses.map((call: any) => ({ name: String(call.name || ''), args: call.input ?? {} })),
+      p
+    )
+    messages.push({
+      role: 'user',
+      content: toolUses.map((call: any, i: number) => ({
         type: 'tool_result',
         tool_use_id: call.id,
-        content: outcome.summaryText,
-      }
+        content: results[i],
+      })),
     })
-    messages.push({ role: 'user', content: toolResults })
   }
 
-  return {
-    replyText:
-      finalText ||
-      (actions.length > 0
-        ? `Prontinho, ${ceoName}! Apliquei e salvei: ${actions.join(', ')}.`
-        : `Recebido, ${ceoName}! Estou aqui na Sede da Blequi pronto(a) para ajudar.`),
-  }
+  return { replyText: fallbackReply(p, finalText) }
 }
 
-async function runAntigravityGeminiTurn(params: {
-  cred: ProviderCredential
-  agent: AgentEmployee
-  world: SharedWorldState
-  ceoName: string
-  promptText: string
-  rootDir: string
-  actions: string[]
-}): Promise<{ replyText: string }> {
-  const { cred, agent, world, ceoName, promptText, rootDir, actions } = params
+async function runAntigravityGeminiTurn(p: ProviderTurnParams): Promise<{ replyText: string }> {
+  const { cred, agent, world, ceoName, promptText, images, context, group } = p
   const client = new GoogleGenAI({ apiKey: cred.apiKey })
   const modelToUse = cred.model || GEMINI_MODEL
-  const systemInstruction = buildWorldAwareSystemPrompt(agent, world, ceoName)
 
-  let interaction = await client.interactions.create({
+  // Em grupos a conversa é compartilhada: o histórico vai no próprio texto em vez do previous_interaction_id da DM
+  const transcriptText =
+    group && context.length > 0
+      ? `Conversa recente no grupo "${group.name}":\n${context.map((m) => m.text).join('\n')}\n\nNova mensagem:\n`
+      : ''
+  const firstInput: any =
+    images.length > 0
+      ? [
+          { type: 'text', text: `${transcriptText}${promptText}` },
+          ...images.map((img) => ({ type: 'image', data: img.base64, mime_type: img.mimeType })),
+        ]
+      : `${transcriptText}${promptText}`
+
+  // Raciocínio "low" deixa o Gemini muito mais rápido para conversa e ferramentas simples
+  let generationConfig: Record<string, any> | undefined = { thinking_level: 'low' }
+  const create = async (req: Record<string, any>) => {
+    try {
+      return await withTimeout(
+        client.interactions.create({ ...req, generation_config: generationConfig } as any),
+        'Antigravity'
+      )
+    } catch (err: any) {
+      // Modelos sem suporte a thinking_level: tenta de novo sem a configuração
+      if (generationConfig && /thinking|generation_config|invalid argument|400/i.test(String(err?.message || ''))) {
+        generationConfig = undefined
+        return await withTimeout(client.interactions.create(req as any), 'Antigravity')
+      }
+      throw err
+    }
+  }
+
+  let interaction: any = await create({
     model: modelToUse,
-    input: promptText,
-    system_instruction: systemInstruction,
+    input: firstInput,
+    system_instruction: buildWorldAwareSystemPrompt(agent, world, ceoName, group),
     tools: AGENCY_TOOLS,
-    previous_interaction_id: agent.lastInteractionId,
+    previous_interaction_id: group ? undefined : agent.lastInteractionId,
   })
 
   let rounds = 0
-  while (rounds < 8) {
-    const steps = Array.isArray(interaction.steps) ? interaction.steps : []
-    const functionCalls = steps.filter(
-      (step): step is { type: 'function_call'; id: string; name: string; arguments: Record<string, any> } =>
-        step.type === 'function_call'
-    )
-
+  while (rounds < MAX_TOOL_ROUNDS) {
+    const steps: any[] = Array.isArray(interaction.steps) ? interaction.steps : []
+    const functionCalls = steps.filter((step) => step.type === 'function_call')
     if (functionCalls.length === 0) break
 
-    const toolResults = functionCalls.map((call) => {
-      const outcome = executeAgentTool(call.name, call.arguments ?? {}, agent, world, rootDir)
-      if (outcome.actionBadge) {
-        actions.push(outcome.actionBadge)
-      }
-      return {
-        type: 'function_result' as const,
-        call_id: call.id,
-        name: call.name,
-        result: outcome.summaryText,
-      }
-    })
+    const results = runToolBatch(
+      functionCalls.map((call) => ({ name: String(call.name), args: call.arguments ?? {} })),
+      p
+    )
+    const toolResults = functionCalls.map((call, i) => ({
+      type: 'function_result' as const,
+      call_id: call.id,
+      name: call.name,
+      result: results[i],
+    }))
 
-    interaction = await client.interactions.create({
+    interaction = await create({
       model: modelToUse,
       previous_interaction_id: interaction.id,
       input: toolResults,
-      system_instruction: buildWorldAwareSystemPrompt(agent, world, ceoName),
+      system_instruction: buildWorldAwareSystemPrompt(agent, world, ceoName, group),
       tools: AGENCY_TOOLS,
     })
     rounds++
   }
 
-  const pendingCalls = (Array.isArray(interaction.steps) ? interaction.steps : []).some(
-    (step) => step.type === 'function_call'
-  )
-  agent.lastInteractionId = pendingCalls ? undefined : interaction.id
-  const replyText =
-    interaction.output_text?.trim() ||
-    (actions.length > 0
-      ? `Prontinho, ${ceoName}! Apliquei e salvei: ${actions.join(', ')}.`
-      : `Recebido, ${ceoName}! Estou acompanhando tudo aqui na Sede da Blequi.`)
+  if (!group) {
+    const pendingCalls = (Array.isArray(interaction.steps) ? interaction.steps : []).some(
+      (step: any) => step.type === 'function_call'
+    )
+    agent.lastInteractionId = pendingCalls ? undefined : interaction.id
+  }
 
-  return { replyText }
+  return { replyText: fallbackReply(p, String(interaction.output_text || '').trim()) }
 }
 
 export async function runAgentConversationTurn(params: {
@@ -1273,6 +1407,9 @@ export async function runAgentConversationTurn(params: {
   providerCredentials?: Record<ExternalAiProviderId, ProviderCredential>
   rootDir: string
   forceSelfBuild?: boolean
+  attachments?: ChatAttachment[]
+  group?: GroupConversationContext
+  onProgress?: () => void
 }): Promise<{ replyText: string; actions: string[]; usedLiveGemini: boolean; providerUsed?: string }> {
   const {
     agent,
@@ -1283,6 +1420,9 @@ export async function runAgentConversationTurn(params: {
     providerCredentials,
     rootDir,
     forceSelfBuild = false,
+    attachments = [],
+    group,
+    onProgress,
   } = params
 
   const creds: Record<ExternalAiProviderId, ProviderCredential> = providerCredentials ?? {
@@ -1292,7 +1432,7 @@ export async function runAgentConversationTurn(params: {
     claude: { apiKey: '', model: 'claude-sonnet-4-5', baseUrl: 'https://api.anthropic.com/v1' },
   }
 
-  const preferred = mapAgentProviderToExternal(agent.provider)
+  const preferred = agentProviderToExternal(agent.provider)
   const fallbackOrder: ExternalAiProviderId[] = [
     preferred,
     ...(['antigravity', 'openai', 'claude', 'opencode'] as ExternalAiProviderId[]).filter((p) => p !== preferred),
@@ -1308,9 +1448,14 @@ export async function runAgentConversationTurn(params: {
     }
   }
 
-  const promptText = forceSelfBuild
+  const prepared = prepareAttachments(rootDir, attachments)
+  const basePrompt = forceSelfBuild
     ? `O(a) CEO ${ceoName} ativou seu modo de auto-criação! Escolha e construa agora (usando build_world_prop, edit_project_code e opcionalmente customize_studio_theme ou consult_colleague) 1 ou 2 melhorias reais para deixar a Sede da Blequi ou a Ilha Blequi ainda mais bonita, leve e aconchegante. Depois conte para ${ceoName} o que você criou e como se sente.`
-    : userMessage
+    : group
+      ? `[${ceoName}]: ${userMessage}`
+      : userMessage
+  const promptText = `${basePrompt}${prepared.note}`
+  const context = group ? normalizeContext(group.transcript) : buildRecentChatContext(agent)
 
   const actions: string[] = []
   const errors: string[] = []
@@ -1318,43 +1463,35 @@ export async function runAgentConversationTurn(params: {
   for (const provId of availableProviders) {
     const cred = creds[provId]
     const label = PROVIDER_DISPLAY_NAME[provId]
+    const base: ProviderTurnParams = {
+      cred,
+      agent,
+      world,
+      ceoName,
+      promptText,
+      images: prepared.images,
+      context,
+      group,
+      rootDir,
+      actions,
+      onProgress,
+    }
+    const runOnce = (images: PreparedImage[]) => {
+      const p = { ...base, images }
+      if (provId === 'antigravity') return runAntigravityGeminiTurn(p)
+      if (provId === 'claude') return runAnthropicTurn(p)
+      return runOpenAiCompatibleTurn({ ...p, providerLabel: label })
+    }
+
     try {
-      if (provId === 'antigravity') {
-        const res = await runAntigravityGeminiTurn({
-          cred,
-          agent,
-          world,
-          ceoName,
-          promptText,
-          rootDir,
-          actions,
-        })
-        return { replyText: res.replyText, actions, usedLiveGemini: true, providerUsed: label }
+      let res: { replyText: string }
+      try {
+        res = await runOnce(prepared.images)
+      } catch (err) {
+        // Alguns modelos não aceitam imagem: tenta de novo só com o texto antes de trocar de provedor
+        if (prepared.images.length === 0 || actions.length > 0) throw err
+        res = await runOnce([])
       }
-
-      if (provId === 'claude') {
-        const res = await runAnthropicTurn({
-          cred,
-          agent,
-          world,
-          ceoName,
-          promptText,
-          rootDir,
-          actions,
-        })
-        return { replyText: res.replyText, actions, usedLiveGemini: true, providerUsed: label }
-      }
-
-      const res = await runOpenAiCompatibleTurn({
-        providerLabel: label,
-        cred,
-        agent,
-        world,
-        ceoName,
-        promptText,
-        rootDir,
-        actions,
-      })
       return { replyText: res.replyText, actions, usedLiveGemini: true, providerUsed: label }
     } catch (err: any) {
       if (provId === 'antigravity' && agent.lastInteractionId) {
