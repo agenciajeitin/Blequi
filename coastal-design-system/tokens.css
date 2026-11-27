@@ -1,0 +1,293 @@
+/* ==========================================================================
+   COASTAL WORLD — 1:1 DESIGN SYSTEM TOKENS & CORE COMPONENT STYLES
+   Reusable across Ilha Blequi & any Coastal-inspired 3D WebGL project.
+   ========================================================================== */
+
+:root {
+  /* Brand Ink & Accents */
+  --cw-navy: #3b3777;
+  --cw-navy-deep: #2c285e;
+  --cw-navy-muted: #726f9e;
+
+  --cw-mint: #02c6a7;
+  --cw-mint-light: #20e4c4;
+  --cw-mint-soft: #86e0cf;
+  --cw-mint-shadow: #019f86;
+
+  --cw-coral: #f2676f;
+  --cw-coral-light: #ff8087;
+  --cw-coral-soft: #f8b3b7;
+  --cw-coral-shadow: #d44b53;
+
+  --cw-yellow: #f6d35f;
+  --cw-yellow-soft: #fae9af;
+  --cw-yellow-shadow: #d8af34;
+
+  --cw-lavender: #9e9bbe;
+  --cw-lavender-shadow: #7d79a3;
+
+  --cw-sky: #00b4ff;
+  --cw-sky-mid: #42d2fb;
+  --cw-sky-horizon: #c2f5f8;
+  --cw-ocean-deep: #65b2e6;
+  --cw-ocean-shallow: #7ed9f2;
+
+  /* Surfaces */
+  --cw-white: #ffffff;
+  --cw-surface: #f4f8ff;
+  --cw-surface-muted: #eef3fa;
+  --cw-border-soft: #e4ecf7;
+
+  /* Active Avatar Theme (dynamically updated by customizer!) */
+  --cw-avatar-body: #7b3556;
+  --cw-avatar-phone: #d8aeb2;
+  --cw-avatar-hand: #b76c79;
+  --cw-avatar-face: #fff0c4;
+
+  /* Typography */
+  --cw-font-display: "Fredoka", "Nunito", system-ui, sans-serif;
+  --cw-font-sans: "Nunito", "Comfortaa", system-ui, -apple-system, sans-serif;
+  --cw-font-mono: "JetBrains Mono", ui-monospace, monospace;
+
+  /* Radii */
+  --cw-radius-key: 10px;
+  --cw-radius-card: 22px;
+  --cw-radius-modal: 30px;
+  --cw-radius-phone: 40px;
+  --cw-radius-pill: 9999px;
+
+  /* Easing Curves */
+  --cw-ease-smooth: cubic-bezier(0.23, 1, 0.32, 1);
+  --cw-ease-bounce: cubic-bezier(0.19, 1.4, 0.3, 1);
+  --cw-ease-press: cubic-bezier(0, 0.96, 0.22, 1);
+
+  /* Shadows */
+  --cw-shadow-card: 0 18px 46px rgba(32, 62, 114, 0.18);
+  --cw-shadow-float: 0 12px 28px rgba(32, 62, 114, 0.22);
+  --cw-shadow-mint: 0 10px 24px rgba(2, 198, 167, 0.34);
+
+  /* Custom Coastal World Playful Cursors (#3b3777 outlined white SVG) */
+  --cw-cursor-auto: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='28' height='28' viewBox='0 0 32 32' fill='none'%3E%3Cpath fill='%233B3777' d='M17.1 30c-.9 0-1.7-.5-2.1-1.3l-2.9-5.7-3.1 1.5a1.8 1.8 0 0 1-2.6-1.7l.8-18.3a1.8 1.8 0 0 1 2.8-1.4l15.1 10.4c.5.4.8 1 .8 1.6 0 .7-.4 1.2-1 1.5l-3 1.5 2.8 5.7c.3.6.3 1.2.1 1.8-.2.6-.6 1.1-1.2 1.4l-5.5 2.7c-.3.2-.7.3-1 .3Z'/%3E%3Cpath fill='%23fff' d='M12.5 21.2c.3 0 .5.1.7.4l3.2 6.4c.2.4.7.6 1.2.4l5.5-2.7c.2-.1.4-.3.4-.5.1-.2.1-.5 0-.7l-3.2-6.4a.8.8 0 0 1 .3-1l3.7-1.9c.1-.1.2-.2.2-.3 0-.1 0-.2-.1-.3L9.2 4.3a.3.3 0 0 0-.3 0c-.1 0-.2.1-.2.3l-.8 18.3c0 .1.1.2.1.3.1 0 .2.1.3 0l3.7-1.9c.1-.1.3-.1.5-.1Z'/%3E%3C/svg%3E") 6 2, auto;
+  --cw-cursor-pointer: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='28' height='28' viewBox='0 0 32 32' fill='none'%3E%3Ccircle cx='16' cy='16' r='10' fill='%23ffffff' stroke='%233B3777' stroke-width='3'/%3E%3Ccircle cx='16' cy='16' r='3.5' fill='%2302C6A7'/%3E%3C/svg%3E") 14 14, pointer;
+  --cw-cursor-grab: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='28' height='28' viewBox='0 0 32 32' fill='none'%3E%3Ccircle cx='16' cy='16' r='11' fill='%23ffffff' stroke='%233B3777' stroke-width='3' stroke-dasharray='4 3'/%3E%3Ccircle cx='16' cy='16' r='3.5' fill='%23F2676F'/%3E%3C/svg%3E") 14 14, grab;
+  --cw-cursor-grabbing: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='28' height='28' viewBox='0 0 32 32' fill='none'%3E%3Ccircle cx='16' cy='16' r='9' fill='%2302C6A7' stroke='%233B3777' stroke-width='3'/%3E%3C/svg%3E") 14 14, grabbing;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html, body {
+  margin: 0;
+  padding: 0;
+  font-family: var(--cw-font-sans);
+  color: var(--cw-navy);
+  cursor: var(--cw-cursor-auto);
+  scroll-behavior: smooth;
+}
+
+button, a, [role="button"] {
+  font-family: inherit;
+  cursor: var(--cw-cursor-pointer);
+  border: 0;
+  background: none;
+}
+
+/* 1. Chunky Display Wordmark */
+.cw-wordmark {
+  font-family: var(--cw-font-display);
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: -0.02em;
+  line-height: 0.86;
+  text-shadow: 0 8px 26px rgba(17, 102, 158, 0.28);
+}
+
+/* 2. Tactile 3D-Lip Pill CTAs */
+.cw-cta {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--cw-radius-pill);
+  padding: 0 0 5px 0;
+  font-weight: 800;
+  letter-spacing: 0.02em;
+  transition: transform 0.25s var(--cw-ease-smooth), box-shadow 0.25s var(--cw-ease-smooth);
+}
+.cw-cta > .cw-cta-inner {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  width: 100%;
+  border-radius: var(--cw-radius-pill);
+  padding: 12px 28px;
+  font-size: 15px;
+  font-weight: 800;
+  transform: translateY(-2px);
+  transition: transform 0.28s var(--cw-ease-smooth);
+}
+.cw-cta:hover > .cw-cta-inner {
+  transform: translateY(-5px);
+}
+.cw-cta:active > .cw-cta-inner {
+  transition-duration: 0.12s;
+  transform: translateY(1px);
+}
+
+.cw-cta--white { background: #d4e0ec; box-shadow: var(--cw-shadow-float); }
+.cw-cta--white > .cw-cta-inner { background: #ffffff; color: var(--cw-navy); }
+.cw-cta--white.cw-cta--icon > .cw-cta-inner { padding: 8px 26px 8px 8px; }
+
+.cw-cta--mint { background: var(--cw-mint-shadow); box-shadow: var(--cw-shadow-mint); }
+.cw-cta--mint > .cw-cta-inner { background: linear-gradient(180deg, var(--cw-mint-light) 0%, var(--cw-mint) 100%); color: #ffffff; }
+
+.cw-cta--coral { background: var(--cw-coral-shadow); box-shadow: 0 10px 24px rgba(242, 103, 111, 0.32); }
+.cw-cta--coral > .cw-cta-inner { background: linear-gradient(180deg, var(--cw-coral-light) 0%, var(--cw-coral) 100%); color: #ffffff; }
+
+.cw-cta--yellow { background: var(--cw-yellow-shadow); box-shadow: 0 10px 24px rgba(246, 211, 95, 0.34); }
+.cw-cta--yellow > .cw-cta-inner { background: linear-gradient(180deg, #ffe382 0%, var(--cw-yellow) 100%); color: var(--cw-navy); }
+
+.cw-cta--lavender { background: var(--cw-lavender-shadow); box-shadow: 0 10px 24px rgba(158, 155, 190, 0.32); }
+.cw-cta--lavender > .cw-cta-inner { background: linear-gradient(180deg, #b6b3d6 0%, var(--cw-lavender) 100%); color: #ffffff; }
+
+.cw-cta--gray { background: #c5cedb; box-shadow: 0 8px 18px rgba(59, 55, 119, 0.12); }
+.cw-cta--gray > .cw-cta-inner { background: #e8eef6; color: var(--cw-navy); }
+
+/* 3. Bordered Circular HUD Buttons */
+.cw-circle-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 52px;
+  height: 52px;
+  border-radius: 50%;
+  border: 3.5px solid #ffffff;
+  background: rgba(255, 255, 255, 0.15);
+  color: #ffffff;
+  backdrop-filter: blur(4px);
+  box-shadow: 0 6px 18px rgba(32, 62, 102, 0.16);
+  transition: transform 0.28s var(--cw-ease-smooth), background 0.22s ease, color 0.22s ease;
+}
+.cw-circle-btn:hover {
+  background: #ffffff;
+  color: var(--cw-navy);
+  transform: scale(1.08);
+}
+.cw-circle-btn:active {
+  transform: scale(0.95);
+}
+.cw-circle-btn--mint {
+  border: 0;
+  background: linear-gradient(180deg, var(--cw-mint-light) 0%, var(--cw-mint) 100%);
+  color: #ffffff;
+  box-shadow: 0 8px 20px rgba(2, 198, 167, 0.42);
+}
+.cw-circle-btn--mint:hover {
+  background: linear-gradient(180deg, #2ef0d0 0%, #03d1b0 100%);
+  color: #ffffff;
+}
+
+/* 4. Beveled Customizer Action Orbs */
+.cw-action-orb {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 76px;
+  height: 76px;
+  border-radius: 50%;
+  background: radial-gradient(circle at 50% 44%, #ffffff 78%, #dce4ee 100%);
+  box-shadow: 0 12px 28px rgba(35, 52, 88, 0.24);
+  transition: transform 0.28s var(--cw-ease-bounce);
+}
+.cw-action-orb:hover {
+  transform: translateY(-4px) scale(1.06);
+}
+.cw-action-orb:active {
+  transform: scale(0.95);
+}
+.cw-action-orb__core {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 48px;
+  height: 48px;
+  border-radius: 50%;
+  color: #ffffff;
+  box-shadow: inset 0 -3px 6px rgba(0, 0, 0, 0.14);
+}
+
+/* 5. Speech Bubble (1:1 Intro Dialog) */
+.cw-speech-bubble {
+  position: relative;
+  display: flex;
+  align-items: center;
+  min-height: 98px;
+  width: 100%;
+  max-width: 520px;
+  border-radius: var(--cw-radius-card);
+  background: #ffffff;
+  padding: 20px 30px 20px 92px;
+  text-align: left;
+  box-shadow: var(--cw-shadow-card);
+}
+.cw-speech-bubble__accent {
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 78px;
+  border-radius: var(--cw-radius-card) 44px 44px var(--cw-radius-card);
+  background: #e9f1fb;
+}
+.cw-speech-bubble__tag {
+  position: absolute;
+  top: -14px;
+  right: -10px;
+  width: 44px;
+  height: 36px;
+  border-radius: 12px;
+  background: var(--cw-coral);
+  transform: rotate(12deg);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  box-shadow: 0 6px 14px rgba(242, 103, 111, 0.44);
+}
+.cw-speech-bubble__tail {
+  position: absolute;
+  bottom: -9px;
+  left: 50%;
+  width: 18px;
+  height: 18px;
+  background: #ffffff;
+  border-radius: 3px;
+  transform: translateX(-50%) rotate(45deg);
+}
+
+/* 6. Keycap Animation */
+@keyframes cwKeyPulse {
+  0%, 35%, 100% { transform: scale(1); }
+  12% { transform: scale(0.84); }
+}
+.cw-keycap {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  border-radius: var(--cw-radius-key);
+  background: #ffffff;
+  color: var(--cw-navy);
+  font-weight: 900;
+  box-shadow: 0 4px 12px rgba(32, 56, 100, 0.18);
+  animation: cwKeyPulse 2.4s ease-in-out infinite;
+}
+
+@keyframes cwPopIn {
+  0% { opacity: 0; transform: translateY(16px) scale(0.95); }
+  100% { opacity: 1; transform: translateY(0) scale(1); }
+}
+.cw-pop-in {
+  animation: cwPopIn 0.36s var(--cw-ease-bounce) forwards;
+}

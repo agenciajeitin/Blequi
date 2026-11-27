@@ -27,7 +27,7 @@ export function AgencyEntryHud() {
     currentUser?.ceoSlot ?? 'ceo-1'
   )
   const [name, setName] = useState(currentUser?.name ?? '')
-  const [role, setRole] = useState(currentUser?.role || 'Co-CEO & Fundadora')
+  const [role, setRole] = useState(currentUser?.role || 'CEO')
   const [ceoCode, setCeoCode] = useState(savedCeoCode || 'blequi-ceo')
   const [skills, setSkills] = useState<string[]>(
     currentUser?.skills?.length ? currentUser.skills : ['Direção de Arte', 'Diorama 3D']
@@ -66,7 +66,7 @@ export function AgencyEntryHud() {
       return
     }
     if (!ceoCode.trim()) {
-      setErrorMessage('Informe a chave privada das Co-CEOs.')
+      setErrorMessage('Informe a senha privada dos CEOs.')
       return
     }
     setErrorMessage(null)
@@ -74,7 +74,7 @@ export function AgencyEntryHud() {
     const result = await enterAgency({
       name: name.trim(),
       entityType: 'human',
-      role: role.trim() || 'Co-CEO & Fundadora',
+      role: role.trim() || 'CEO',
       skills,
       roomScale,
       ceoSlot,
@@ -100,7 +100,7 @@ export function AgencyEntryHud() {
           <div>
             <p className="text-sm font-bold tracking-tight text-white">Ilha Blequi · Agência 3D Privada</p>
             <p className="text-xs text-slate-300">
-              Acesso exclusivo das 2 Co-CEOs · {serverMeta?.agentCount ?? 4} funcionários ativos
+              Acesso exclusivo dos CEOs Raynocas &amp; Kafuzinho · {serverMeta?.agentCount ?? 4} funcionários na Sede
             </p>
           </div>
         </div>
@@ -125,7 +125,7 @@ export function AgencyEntryHud() {
 
       {/* Right CEO Private Access Card */}
       <section
-        aria-label="Acesso privado das Co-CEOs"
+        aria-label="Acesso privado dos CEOs"
         className="pointer-events-auto mx-auto flex max-h-[calc(100vh-2rem)] w-full max-w-[452px] flex-col overflow-hidden rounded-3xl border border-slate-200/15 bg-[#151a26]/92 shadow-[0_24px_80px_rgba(0,0,0,0.65)] backdrop-blur-2xl lg:mx-0"
       >
         <div className="border-b border-slate-200/10 px-6 pt-5 pb-4">
@@ -133,10 +133,10 @@ export function AgencyEntryHud() {
             <div>
               <h1 className="flex items-center gap-2 text-lg font-bold tracking-tight text-white">
                 <Crown className="h-4 w-4 text-amber-400" />
-                Entrar como Co-CEO
+                Entrar como CEO
               </h1>
               <p className="mt-0.5 text-xs leading-relaxed text-slate-400">
-                Espaço local privado sincronizado entre você e sua amiga.
+                Espaço local privado dos CEOs Raynocas e Kafuzinho.
               </p>
             </div>
             <span
@@ -156,7 +156,7 @@ export function AgencyEntryHud() {
             {/* CEO Slot Picker */}
             <fieldset>
               <legend className="mb-2 text-xs font-semibold text-slate-200">
-                Qual das duas Co-CEOs está entrando?
+                Qual CEO está entrando?
               </legend>
               <div className="grid grid-cols-2 gap-2">
                 <button
@@ -168,9 +168,9 @@ export function AgencyEntryHud() {
                       : 'border-slate-200/10 bg-white/[0.02] text-slate-400 hover:border-slate-200/20 hover:text-slate-200'
                   }`}
                 >
-                  <span className="text-xs font-semibold">Co-CEO 1 (Host)</span>
+                  <span className="text-xs font-semibold">Raynocas</span>
                   <span className="mt-0.5 text-[11px] text-slate-400">
-                    {onlineCeo1 ? `Online: ${onlineCeo1.name}` : 'Assento principal'}
+                    {onlineCeo1 ? `Online: ${onlineCeo1.name}` : 'CEO · Ambientação'}
                   </span>
                 </button>
                 <button
@@ -182,9 +182,9 @@ export function AgencyEntryHud() {
                       : 'border-slate-200/10 bg-white/[0.02] text-slate-400 hover:border-slate-200/20 hover:text-slate-200'
                   }`}
                 >
-                  <span className="text-xs font-semibold">Co-CEO 2 (Amiga)</span>
+                  <span className="text-xs font-semibold">Kafuzinho</span>
                   <span className="mt-0.5 text-[11px] text-slate-400">
-                    {onlineCeo2 ? `Online: ${onlineCeo2.name}` : 'Acesso LAN / Tailscale'}
+                    {onlineCeo2 ? `Online: ${onlineCeo2.name}` : 'CEO · Edifícios'}
                   </span>
                 </button>
               </div>
@@ -216,7 +216,7 @@ export function AgencyEntryHud() {
                   className="flex items-center gap-1.5 text-xs font-semibold text-slate-200"
                 >
                   <KeyRound className="h-3.5 w-3.5 text-amber-400" />
-                  Chave Privada das Co-CEOs
+                  Senha Privada dos CEOs
                 </label>
                 {serverMeta?.usingDefaultCeoCode && (
                   <span className="font-mono text-[10px] text-slate-400">padrão: blequi-ceo</span>

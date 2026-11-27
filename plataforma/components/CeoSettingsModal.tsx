@@ -1,8 +1,9 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import {
   Check,
   Copy,
   ExternalLink,
+  Globe,
   KeyRound,
   Lock,
   Sparkles,
@@ -10,7 +11,17 @@ import {
   Wifi,
   X,
 } from 'lucide-react'
+import {
+  EXTERNAL_AI_PROVIDERS,
+  EXTERNAL_AI_PROVIDER_MAP,
+  type ExternalAiProviderId,
+} from '@funcionarios/aiProvidersCatalog'
 import { useAgencyStore } from '@plataforma/store/useAgencyStore'
+import { AiProviderLogo } from './AiProviderLogo'
+
+function extractHostPort(rawUrl: string): string {
+  return rawUrl.replace(/^https?:\/\//i, '')
+}
 
 export function CeoSettingsModal() {
   const isOpen = useAgencyStore((s) => s.isSettingsOpen)
@@ -22,36 +33,51 @@ export function CeoSettingsModal() {
   const saveServerConfig = useAgencyStore((s) => s.saveServerConfig)
   const resolveProposal = useAgencyStore((s) => s.resolveProposal)
 
-  const [geminiKey, setGeminiKey] = useState('')
+  const [selectedProvider, setSelectedProvider] = useState<ExternalAiProviderId>('antigravity')
+  const [apiKeyDraft, setApiKeyDraft] = useState('')
+  const [modelDraft, setModelDraft] = useState('')
+  const [baseUrlDraft, setBaseUrlDraft] = useState('')
   const [newCeoCode, setNewCeoCode] = useState('')
   const [copiedUrl, setCopiedUrl] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
   const [feedback, setFeedback] = useState<string | null>(null)
 
+  const providerMeta = EXTERNAL_AI_PROVIDER_MAP[selectedProvider]
+  const providerStatus = serverMeta?.aiProviders?.find((p) => p.id === selectedProvider)
+
+  useEffect(() => {
+    setApiKeyDraft('')
+    setModelDraft(providerStatus?.model || providerMeta.defaultModel)
+    setBaseUrlDraft(providerStatus?.baseUrl || providerMeta.defaultBaseUrl)
+    setFeedback(null)
+  }, [selectedProvider, providerStatus?.model, providerStatus?.baseUrl, providerMeta.defaultModel, providerMeta.defaultBaseUrl])
+
   if (!isOpen) return null
 
-  const handleCopy = async (url: string) => {
+  const handleCopy = async (text: string) => {
     try {
-      await navigator.clipboard.writeText(url)
-      setCopiedUrl(url)
+      await navigator.clipboard.writeText(text)
+      setCopiedUrl(text)
       setTimeout(() => setCopiedUrl(null), 2000)
     } catch {}
   }
 
-  const handleSave = async (e: React.FormEvent) => {
+  const handleSaveProvider = async (e: React.FormEvent) => {
     e.preventDefault()
-    if (!geminiKey.trim() && !newCeoCode.trim()) return
     setSaving(true)
     setFeedback(null)
     const res = await saveServerConfig({
-      geminiApiKey: geminiKey.trim() || undefined,
+      providerId: selectedProvider,
+      apiKey: apiKeyDraft.trim() || undefined,
+      model: modelDraft.trim() || undefined,
+      baseUrl: providerMeta.envBaseUrlKey ? baseUrlDraft.trim() || undefined : undefined,
       newCeoCode: newCeoCode.trim() || undefined,
     })
     setSaving(false)
     if (res.ok) {
-      setGeminiKey('')
+      setApiKeyDraft('')
       setNewCeoCode('')
-      setFeedback('Configuração salva no .env local e ativada na hora!')
+      setFeedback(`Configuração de ${providerMeta.name} salva ao vivo (sem reiniciar a ilha)!`)
     } else {
       setFeedback(res.error || 'Erro ao salvar.')
     }
@@ -64,9 +90,8 @@ export function CeoSettingsModal() {
     >
       <div
         onClick={(e) => e.stopPropagation()}
-        className="cw-pop-in relative flex max-h-[88vh] w-full max-w-xl flex-col rounded-[32px] bg-white shadow-[0_28px_70px_rgba(24,42,88,0.34)]"
+        className="cw-pop-in relative flex max-h-[90vh] w-full max-w-2xl flex-col rounded-[32px] bg-white shadow-[0_28px_70px_rgba(24,42,88,0.34)]"
       >
-        {/* Coastal World Floating Mint Close Orb */}
         <button
           type="button"
           onClick={() => setSettingsOpen(false)}
@@ -80,44 +105,44 @@ export function CeoSettingsModal() {
           <p className="text-xs font-extrabold uppercase tracking-wider text-[#02c6a7]">
             Governança Local
           </p>
-          <h2 className="text-lg font-black text-[#3b3777]">Painel Privado das Co-CEOs</h2>
+          <h2 className="text-lg font-black text-[#3b3777]">Painel Privado dos CEOs</h2>
         </div>
 
         <div className="flex-1 space-y-4 overflow-y-auto p-6">
-          {/* LAN / Tailscale Link */}
-          <section className="rounded-[22px] bg-[#e9fbf7] p-4">
-            <div className="flex items-center gap-2 text-xs font-black text-[#01967e]">
-              <Wifi className="h-4 w-4" />
-              Link em Tempo Real para sua Amiga (LAN / Tailscale)
-            </div>
-            <p className="mt-1 text-xs font-semibold text-[#3b5b6b]">
-              Enquanto este computador rodar{' '}
-              <code className="rounded-md bg-white px-1.5 py-0.5 font-mono text-[11px] font-bold text-[#3b3777]">
-                npm run dev
-              </code>
-              , compartilhe o link abaixo + a Chave CEO:
-            </p>
-            <div className="mt-2.5 space-y-1.5">
-              {serverMeta?.networkUrls && serverMeta.networkUrls.length > 0 ? (
-                serverMeta.networkUrls.map((url) => (
-                  <div
-                    key={url}
-                    className="flex items-center justify-between gap-2 rounded-full bg-white px-3.5 py-2 shadow-sm"
-                  >
-                    <span className="truncate font-mono text-xs font-bold text-[#3b3777]">{url}</span>
-                    <button
-                      type="button"
-                      onClick={() => handleCopy(url)}
-                      className="inline-flex shrink-0 items-center gap-1 rounded-full bg-[#02c6a7] px-3 py-1 text-[11px] font-extrabold text-white hover:brightness-105"
-                    >
-                      {copiedUrl === url ? <Check className="h-3 w-3" /> : <Copy className="h-3 w-3" />}
-                      {copiedUrl === url ? 'Copiado' : 'Copiar'}
-                    </button>
-                  </div>
-                ))
-              ) : (
-                <p className="font-mono text-xs font-bold text-[#3b3777]">http://localhost:5173</p>
-              )}
+          {/* Compact LAN / Tailscale IP Info Only */}
+          <section className="rounded-[22px] bg-[#e9fbf7] px-4 py-3">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className="flex items-center gap-2 text-xs font-black text-[#01967e]">
+                <Wifi className="h-4 w-4" />
+                <span>LAN / Tailscale</span>
+              </div>
+              <div className="flex flex-wrap items-center gap-1.5">
+                {serverMeta?.networkUrls && serverMeta.networkUrls.length > 0 ? (
+                  serverMeta.networkUrls.map((url) => {
+                    const displayIp = extractHostPort(url)
+                    return (
+                      <div
+                        key={url}
+                        className="flex items-center gap-2 rounded-full bg-white px-3 py-1 shadow-sm"
+                      >
+                        <span className="font-mono text-xs font-bold text-[#3b3777]">{displayIp}</span>
+                        <button
+                          type="button"
+                          onClick={() => handleCopy(url)}
+                          className="inline-flex items-center gap-1 rounded-full bg-[#02c6a7] px-2.5 py-0.5 text-[10px] font-extrabold text-white hover:brightness-105"
+                        >
+                          {copiedUrl === url ? <Check className="h-3 w-3" /> : <Copy className="h-3 w-3" />}
+                          {copiedUrl === url ? 'Copiado' : 'Copiar'}
+                        </button>
+                      </div>
+                    )
+                  })
+                ) : (
+                  <span className="rounded-full bg-white px-3 py-1 font-mono text-xs font-bold text-[#3b3777] shadow-sm">
+                    localhost:5173
+                  </span>
+                )}
+              </div>
             </div>
           </section>
 
@@ -158,15 +183,198 @@ export function CeoSettingsModal() {
             </section>
           )}
 
+          {/* AI Providers API Keys Registry with Saved Logos & Per-Provider Settings */}
+          <section className="space-y-3 rounded-[24px] border-2 border-[#edf2f9] bg-[#f8fbff] p-4">
+            <div className="flex items-center justify-between gap-2">
+              <div>
+                <h3 className="flex items-center gap-1.5 text-xs font-black uppercase tracking-wider text-[#3b3777]">
+                  <KeyRound className="h-3.5 w-3.5 text-[#02c6a7]" />
+                  Chaves API &amp; Provedores de IA
+                </h3>
+                <p className="mt-0.5 text-[11px] font-semibold text-[#7c79a6]">
+                  Selecione uma IA abaixo para configurar chave, modelo e endpoint específicos.
+                </p>
+              </div>
+            </div>
+
+            {/* Saved-Logo Provider Grid */}
+            <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+              {EXTERNAL_AI_PROVIDERS.map((prov) => {
+                const status = serverMeta?.aiProviders?.find((p) => p.id === prov.id)
+                const isConfigured = Boolean(status?.configured)
+                const active = selectedProvider === prov.id
+                return (
+                  <button
+                    key={prov.id}
+                    type="button"
+                    onClick={() => setSelectedProvider(prov.id)}
+                    className={`flex flex-col items-start gap-1.5 rounded-2xl border-2 p-2.5 text-left transition-all ${
+                      active
+                        ? 'border-[#02c6a7] bg-white shadow-sm'
+                        : 'border-transparent bg-white/80 hover:border-[#d7e3f4] hover:bg-white'
+                    }`}
+                  >
+                    <div className="flex w-full items-center justify-between gap-1">
+                      <AiProviderLogo id={prov.id} className="h-6 w-6 shrink-0" />
+                      <span
+                        className={`h-2 w-2 rounded-full ${
+                          isConfigured ? 'bg-[#02c6a7]' : 'bg-[#cbd5e1]'
+                        }`}
+                        title={isConfigured ? 'Configurada' : 'Não configurada'}
+                      />
+                    </div>
+                    <span className="truncate text-[11px] font-black text-[#3b3777]">{prov.name}</span>
+                    <span
+                      className={`text-[10px] font-bold ${
+                        isConfigured ? 'text-[#01967e]' : 'text-[#9ea4be]'
+                      }`}
+                    >
+                      {isConfigured ? 'Ativa' : 'Sem chave'}
+                    </span>
+                  </button>
+                )
+              })}
+            </div>
+
+            {/* Selected Provider Specific Config Form */}
+            <form onSubmit={handleSaveProvider} className="space-y-3 rounded-2xl bg-white p-4 shadow-sm">
+              <div className="flex items-center justify-between gap-2">
+                <div className="flex items-center gap-2.5">
+                  <AiProviderLogo id={providerMeta.id} className="h-7 w-7 shrink-0" />
+                  <div>
+                    <p className="text-sm font-black text-[#3b3777]">{providerMeta.name}</p>
+                    <p className="text-[11px] font-semibold text-[#7c79a6]">{providerMeta.tagline}</p>
+                  </div>
+                </div>
+                <a
+                  href={providerMeta.docsUrl}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="inline-flex shrink-0 items-center gap-1 rounded-full bg-[#e9fbf7] px-2.5 py-1 text-[10px] font-extrabold text-[#01967e] hover:brightness-95"
+                >
+                  Chave
+                  <ExternalLink className="h-3 w-3" />
+                </a>
+              </div>
+
+              <div>
+                <label className="mb-1 block text-[11px] font-black text-[#3b3777]">
+                  {providerMeta.envApiKey}{' '}
+                  {!providerMeta.requiresApiKey && (
+                    <span className="font-semibold text-[#8d8bb0]">(opcional)</span>
+                  )}
+                </label>
+                <input
+                  type="password"
+                  value={apiKeyDraft}
+                  onChange={(e) => setApiKeyDraft(e.target.value)}
+                  placeholder={
+                    providerStatus?.configured
+                      ? 'Chave já salva no .env · cole outra apenas para trocar'
+                      : providerMeta.keyPlaceholder
+                  }
+                  className="w-full rounded-full border-2 border-[#edf2f9] bg-[#f5f8fd] px-4 py-2 font-mono text-xs font-semibold text-[#3b3777] placeholder:text-[#9ea4be] focus:border-[#02c6a7] focus:bg-white focus:outline-none"
+                />
+              </div>
+
+              <div className={`grid gap-2.5 ${providerMeta.envBaseUrlKey ? 'sm:grid-cols-2' : 'grid-cols-1'}`}>
+                <div>
+                  <label className="mb-1 block text-[11px] font-black text-[#3b3777]">
+                    Modelo padrão ({providerMeta.envModelKey})
+                  </label>
+                  <input
+                    type="text"
+                    value={modelDraft}
+                    onChange={(e) => setModelDraft(e.target.value)}
+                    placeholder={providerMeta.defaultModel}
+                    className="w-full rounded-full border-2 border-[#edf2f9] bg-[#f5f8fd] px-3.5 py-2 font-mono text-xs font-semibold text-[#3b3777] focus:border-[#02c6a7] focus:bg-white focus:outline-none"
+                  />
+                  <div className="mt-1.5 flex flex-wrap gap-1">
+                    {providerMeta.modelSuggestions.map((m) => (
+                      <button
+                        key={m}
+                        type="button"
+                        onClick={() => setModelDraft(m)}
+                        className={`rounded-full px-2 py-0.5 font-mono text-[10px] font-bold transition-colors ${
+                          modelDraft === m
+                            ? 'bg-[#3b3777] text-white'
+                            : 'bg-[#eef3fa] text-[#6c6996] hover:bg-[#e1eaf7]'
+                        }`}
+                      >
+                        {m}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                {providerMeta.envBaseUrlKey && (
+                  <div>
+                    <label className="mb-1 flex items-center gap-1 text-[11px] font-black text-[#3b3777]">
+                      <Globe className="h-3 w-3 text-[#02c6a7]" />
+                      Endpoint ({providerMeta.envBaseUrlKey})
+                    </label>
+                    <input
+                      type="text"
+                      value={baseUrlDraft}
+                      onChange={(e) => setBaseUrlDraft(e.target.value)}
+                      placeholder={providerMeta.defaultBaseUrl}
+                      className="w-full rounded-full border-2 border-[#edf2f9] bg-[#f5f8fd] px-3.5 py-2 font-mono text-xs font-semibold text-[#3b3777] focus:border-[#02c6a7] focus:bg-white focus:outline-none"
+                    />
+                  </div>
+                )}
+              </div>
+
+              {/* Optional CEO Password Change */}
+              <div className="border-t border-[#edf2f9] pt-3">
+                <label className="mb-1 flex items-center gap-1.5 text-[11px] font-black text-[#3b3777]">
+                  <Lock className="h-3.5 w-3.5 text-[#f2676f]" />
+                  Trocar Senha dos CEOs (opcional)
+                </label>
+                <input
+                  type="password"
+                  value={newCeoCode}
+                  onChange={(e) => setNewCeoCode(e.target.value)}
+                  placeholder="Deixe vazio para manter a senha atual"
+                  className="w-full rounded-full border-2 border-[#edf2f9] bg-[#f5f8fd] px-4 py-2 font-mono text-xs font-semibold text-[#3b3777] placeholder:text-[#9ea4be] focus:border-[#02c6a7] focus:bg-white focus:outline-none"
+                />
+              </div>
+
+              {feedback && (
+                <p className="rounded-2xl bg-[#e9fbf7] px-3.5 py-2 text-center text-xs font-extrabold text-[#01967e]">
+                  {feedback}
+                </p>
+              )}
+
+              <div className="flex justify-end gap-2 pt-1">
+                <button
+                  type="button"
+                  onClick={() => setSettingsOpen(false)}
+                  className="rounded-full bg-[#eef2f8] px-4 py-2 text-xs font-extrabold text-[#6c6996] hover:bg-[#e1e8f3]"
+                >
+                  Fechar
+                </button>
+                <button
+                  type="submit"
+                  disabled={saving}
+                  className="cw-cta cw-cta-mint disabled:opacity-50"
+                >
+                  <span className="cw-cta-inner px-5 py-2 text-xs font-extrabold">
+                    {saving ? 'Salvando...' : `Salvar ${providerMeta.name}`}
+                  </span>
+                </button>
+              </div>
+            </form>
+          </section>
+
           {/* Autonomy Toggle */}
           <section className="flex items-center justify-between gap-4 rounded-[22px] bg-[#f5f8fd] p-4">
             <div>
               <p className="flex items-center gap-1.5 text-xs font-black text-[#3b3777]">
                 <Sparkles className="h-3.5 w-3.5 text-[#f6b93b]" />
-                Auto-criação direta no escritório privado
+                Auto-criação direta na Sede da Blequi
               </p>
               <p className="mt-0.5 text-[11px] font-semibold text-[#7c79a6]">
-                Quando ativo, o time instala objetos 3D imediatamente e as CEOs podem celebrá-los depois.
+                Quando ativo, a equipe instala objetos 3D imediatamente e os CEOs podem celebrá-los depois.
               </p>
             </div>
             <button
@@ -183,77 +391,6 @@ export function CeoSettingsModal() {
               />
             </button>
           </section>
-
-          {/* Gemini Key & CEO Pass Form */}
-          <form onSubmit={handleSave} className="space-y-3.5">
-            <div>
-              <div className="mb-1.5 flex items-center justify-between">
-                <label className="flex items-center gap-1.5 text-xs font-black text-[#3b3777]">
-                  <KeyRound className="h-3.5 w-3.5 text-[#3b82f6]" />
-                  GEMINI_API_KEY (.env local)
-                </label>
-                <a
-                  href="https://aistudio.google.com/app/api-keys"
-                  target="_blank"
-                  rel="noreferrer"
-                  className="inline-flex items-center gap-1 text-[11px] font-extrabold text-[#02c6a7] hover:underline"
-                >
-                  Gerar no AI Studio
-                  <ExternalLink className="h-3 w-3" />
-                </a>
-              </div>
-              <input
-                type="password"
-                value={geminiKey}
-                onChange={(e) => setGeminiKey(e.target.value)}
-                placeholder={
-                  serverMeta?.geminiConfigured
-                    ? 'Chave configurada! Cole outra apenas se quiser trocar.'
-                    : 'Cole sua AIza... para ativar Gemini 3.8 Flash ao vivo'
-                }
-                className="w-full rounded-full border-2 border-[#edf2f9] bg-[#f5f8fd] px-4 py-2.5 font-mono text-xs font-semibold text-[#3b3777] placeholder:text-[#9ea4be] focus:border-[#02c6a7] focus:bg-white focus:outline-none"
-              />
-            </div>
-
-            <div>
-              <label className="mb-1.5 flex items-center gap-1.5 text-xs font-black text-[#3b3777]">
-                <Lock className="h-3.5 w-3.5 text-[#f2676f]" />
-                Trocar Chave Privada das Co-CEOs (opcional)
-              </label>
-              <input
-                type="password"
-                value={newCeoCode}
-                onChange={(e) => setNewCeoCode(e.target.value)}
-                placeholder="Deixe vazio para manter a chave atual"
-                className="w-full rounded-full border-2 border-[#edf2f9] bg-[#f5f8fd] px-4 py-2.5 font-mono text-xs font-semibold text-[#3b3777] placeholder:text-[#9ea4be] focus:border-[#02c6a7] focus:bg-white focus:outline-none"
-              />
-            </div>
-
-            {feedback && (
-              <p className="rounded-2xl bg-[#e9fbf7] px-3.5 py-2 text-center text-xs font-extrabold text-[#01967e]">
-                {feedback}
-              </p>
-            )}
-
-            <div className="flex justify-end gap-2 pt-1">
-              <button
-                type="button"
-                onClick={() => setSettingsOpen(false)}
-                className="rounded-full bg-[#eef2f8] px-5 py-2.5 text-xs font-extrabold text-[#6c6996] hover:bg-[#e1e8f3]"
-              >
-                Fechar
-              </button>
-              <button
-                type="submit"
-                disabled={saving || (!geminiKey.trim() && !newCeoCode.trim())}
-                className="cw-cta cw-cta-mint disabled:opacity-50"
-              >
-                <span className="cw-cta-inner px-5 py-2.5 text-xs font-extrabold">
-                  {saving ? 'Salvando...' : 'Salvar no Servidor Local'}
-                </span>
-              </button>
-            </div>
-          </form>
         </div>
       </div>
     </div>

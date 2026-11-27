@@ -5,6 +5,12 @@ import type { IncomingMessage, ServerResponse } from 'node:http'
 import type { Plugin, ViteDevServer } from 'vite'
 import { createInitialWorldState } from '../funcionarios/roster'
 import { AGENT_PROVIDERS, ROOM_SCALES, STUDIO_ZONES } from '../funcionarios/providers'
+import {
+  EXTERNAL_AI_PROVIDERS,
+  EXTERNAL_AI_PROVIDER_MAP,
+  type ExternalAiProviderId,
+  type ExternalAiProviderStatus,
+} from '../funcionarios/aiProvidersCatalog'
 import type {
   AgentEmployee,
   AgentProviderId,
@@ -34,21 +40,85 @@ function readDotEnv(rootDir: string): Record<string, string> {
   return out
 }
 
-function writeDotEnvKey(rootDir: string, key: string, value: string) {
-  const envPath = path.join(rootDir, '.env')
-  const current = readDotEnv(rootDir)
+function getLocalSecretsPath(rootDir: string) {
+  return path.join(rootDir, 'estado-mundo', 'ai-keys.local.json')
+}
+
+function readLocalSecrets(rootDir: string): Record<string, string> {
+  const filePath = getLocalSecretsPath(rootDir)
+  if (!fs.existsSync(filePath)) return {}
+  try {
+    const parsed = JSON.parse(fs.readFileSync(filePath, 'utf-8')) as Record<string, unknown>
+    const out: Record<string, string> = {}
+    for (const [k, v] of Object.entries(parsed)) {
+      if (typeof v === 'string') out[k] = v
+    }
+    return out
+  } catch {
+    return {}
+  }
+}
+
+/**
+ * Grava chaves em estado-mundo/ai-keys.local.json (ignorado pelo Vite watch e pelo .gitignore)
+ * para nunca reiniciar o servidor Vite nem recarregar a página ao trocar de IA!
+ */
+function writeLocalSecretKey(rootDir: string, key: string, value: string) {
+  const filePath = getLocalSecretsPath(rootDir)
+  fs.mkdirSync(path.dirname(filePath), { recursive: true })
+  const current = readLocalSecrets(rootDir)
   current[key] = value
-  const content = Object.entries(current)
-    .map(([k, v]) => `${k}=${v}`)
-    .join('\n')
-  fs.writeFileSync(envPath, `${content}\n`, 'utf-8')
+  fs.writeFileSync(filePath, JSON.stringify(current, null, 2), 'utf-8')
+}
+
+export interface ProviderCredential {
+  apiKey: string
+  model: string
+  baseUrl: string
 }
 
 function getRuntimeConfig(rootDir: string) {
   const dot = readDotEnv(rootDir)
-  const geminiApiKey = (dot.GEMINI_API_KEY || process.env.GEMINI_API_KEY || '').trim()
-  const ceoCode = (dot.BLEQUI_CEO_CODE || process.env.BLEQUI_CEO_CODE || 'blequi-ceo').trim()
-  return { geminiApiKey, ceoCode }
+  const local = readLocalSecrets(rootDir)
+  const getVal = (key: string) => (local[key] || dot[key] || process.env[key] || '').trim()
+
+  const geminiApiKey = getVal('GEMINI_API_KEY')
+  const ceoCode = getVal('BLEQUI_CEO_CODE') || 'blequi-ceo'
+
+  const providerCredentials = {} as Record<ExternalAiProviderId, ProviderCredential>
+  const aiProviders: ExternalAiProviderStatus[] = EXTERNAL_AI_PROVIDERS.map((p) => {
+    const keyVal = getVal(p.envApiKey)
+    const modelVal = getVal(p.envModelKey) || p.defaultModel
+    const baseUrlVal = (p.envBaseUrlKey ? getVal(p.envBaseUrlKey) : '') || p.defaultBaseUrl
+    providerCredentials[p.id] = {
+      apiKey: keyVal,
+      model: modelVal,
+      baseUrl: baseUrlVal,
+    }
+    return {
+      id: p.id,
+      configured: p.requiresApiKey ? Boolean(keyVal) : Boolean(baseUrlVal),
+      model: modelVal,
+      baseUrl: baseUrlVal,
+    }
+  })
+  const anyAiConfigured = aiProviders.some((p) => p.configured)
+  return { geminiApiKey, ceoCode, aiProviders, providerCredentials, anyAiConfigured }
+}
+
+function resolveCeoIdentity(rawLogin: string): { slot: 'ceo-1' | 'ceo-2'; name: string; role: string } | null {
+  const normalized = rawLogin
+    .trim()
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+  if (normalized === 'raynocas' || normalized === 'ray') {
+    return { slot: 'ceo-1', name: 'Raynocas', role: 'CEO · Ambientação & Estética' }
+  }
+  if (normalized === 'kafuzinho' || normalized === 'kafu' || normalized === 'kafuzin') {
+    return { slot: 'ceo-2', name: 'Kafuzinho', role: 'CEO · Edifícios & Animações' }
+  }
+  return null
 }
 
 function getLocalNetworkUrls(port: number): string[] {
@@ -211,20 +281,22 @@ export function blequiAgencyServerPlugin(): Plugin {
           // Public metadata for entry screen (never leaks secrets)
           if (pathname === '/api/agency/meta' && method === 'GET') {
             prunePresence()
-            const { geminiApiKey, ceoCode } = getRuntimeConfig(rootDir)
+            const { ceoCode, aiProviders, anyAiConfigured } = getRuntimeConfig(rootDir)
             const port = server.config.server.port || 5173
+            const agyStatus = aiProviders.find((p) => p.id === 'antigravity')
             return sendJson(res, 200, {
-              geminiConfigured: Boolean(geminiApiKey),
-              geminiModel: 'gemini-3.8-flash',
+              geminiConfigured: anyAiConfigured,
+              geminiModel: agyStatus?.model || 'gemini-3.8-flash',
               usingDefaultCeoCode: ceoCode === 'blequi-ceo',
               networkUrls: getLocalNetworkUrls(port),
               onlineCeos: worldState.onlineCeos,
               agentCount: worldState.agents.length,
               propCount: worldState.props.length,
+              aiProviders,
             })
           }
 
-          // CEO Login & Presence registration
+          // CEO Login & Presence registration (exclusively Raynocas & Kafuzinho)
           if (pathname === '/api/agency/auth' && method === 'POST') {
             const body = await readJsonBody(req)
             const { ceoCode } = getRuntimeConfig(rootDir)
@@ -232,33 +304,44 @@ export function blequiAgencyServerPlugin(): Plugin {
             if (provided !== ceoCode) {
               return sendJson(res, 401, {
                 ok: false,
-                error: 'Chave CEO incorreta. Somente as duas Co-CEOs têm acesso à agência privada Blequi.',
+                error: 'Senha incorreta. Acesso exclusivo dos CEOs Raynocas e Kafuzinho.',
+              })
+            }
+
+            const identity = resolveCeoIdentity(String(body.name || ''))
+            if (!identity) {
+              return sendJson(res, 401, {
+                ok: false,
+                error: 'Login não reconhecido. Apenas os CEOs Raynocas e Kafuzinho podem entrar.',
               })
             }
 
             prunePresence()
-            const slot: 'ceo-1' | 'ceo-2' = body.ceoSlot === 'ceo-2' ? 'ceo-2' : 'ceo-1'
-            const presenceId = String(body.id || `ceo-${slot}`)
-            const name = String(body.name || (slot === 'ceo-1' ? 'Co-CEO 1' : 'Co-CEO 2')).trim()
-            const role = String(body.role || 'Co-CEO & Fundadora').trim()
+            const presenceId = `ceo-${identity.slot}`
 
-            worldState.onlineCeos = worldState.onlineCeos.filter((c) => c.ceoSlot !== slot && c.id !== presenceId)
+            worldState.onlineCeos = worldState.onlineCeos.filter(
+              (c) => c.ceoSlot !== identity.slot && c.id !== presenceId
+            )
             worldState.onlineCeos.push({
               id: presenceId,
-              name,
-              role,
-              ceoSlot: slot,
+              name: identity.name,
+              role: identity.role,
+              ceoSlot: identity.slot,
               activeView: worldState.worldView,
               activeZone: worldState.activeStudioZone,
               lastSeenAt: new Date().toISOString(),
             })
             persistAndBroadcast()
-            return sendJson(res, 200, { ok: true, state: worldState })
+            return sendJson(res, 200, {
+              ok: true,
+              ceo: identity,
+              state: worldState,
+            })
           }
 
           // All remaining routes require CEO pass
           if (!verifyCeoAccess(req, url)) {
-            return sendJson(res, 401, { ok: false, error: 'Acesso exclusivo das Co-CEOs.' })
+            return sendJson(res, 401, { ok: false, error: 'Acesso exclusivo dos CEOs.' })
           }
 
           if (pathname === '/api/agency/state' && method === 'GET') {
@@ -299,8 +382,8 @@ export function blequiAgencyServerPlugin(): Plugin {
             if (!entry) {
               entry = {
                 id: String(body.id || `ceo-${slot}`),
-                name: String(body.name || (slot === 'ceo-1' ? 'Co-CEO 1' : 'Co-CEO 2')),
-                role: String(body.role || 'Co-CEO'),
+                name: String(body.name || (slot === 'ceo-1' ? 'Raynocas' : 'Kafuzinho')),
+                role: String(body.role || 'CEO'),
                 ceoSlot: slot,
                 activeView: body.activeView === 'studio' ? 'studio' : 'island',
                 activeZone: (body.activeZone as StudioZoneId) || null,
@@ -354,7 +437,7 @@ export function blequiAgencyServerPlugin(): Plugin {
               worldState.onlineCeos.push({
                 id: String(body.id || `ceo-${slot}`),
                 name: String(body.name),
-                role: String(body.role || 'Co-CEO'),
+                role: String(body.role || 'CEO'),
                 ceoSlot: slot,
                 activeView: (body.activeView as WorldViewMode) || 'island',
                 activeZone: (body.activeZone as StudioZoneId) || null,
@@ -374,13 +457,33 @@ export function blequiAgencyServerPlugin(): Plugin {
           if (pathname === '/api/agency/config-key' && method === 'POST') {
             const body = await readJsonBody(req)
             if (typeof body.geminiApiKey === 'string' && sanitizeEnvValue(body.geminiApiKey)) {
-              writeDotEnvKey(rootDir, 'GEMINI_API_KEY', sanitizeEnvValue(body.geminiApiKey))
+              writeLocalSecretKey(rootDir, 'GEMINI_API_KEY', sanitizeEnvValue(body.geminiApiKey))
+            }
+            if (typeof body.providerId === 'string' && body.providerId in EXTERNAL_AI_PROVIDER_MAP) {
+              const meta = EXTERNAL_AI_PROVIDER_MAP[body.providerId as ExternalAiProviderId]
+              if (typeof body.apiKey === 'string' && sanitizeEnvValue(body.apiKey)) {
+                writeLocalSecretKey(rootDir, meta.envApiKey, sanitizeEnvValue(body.apiKey))
+              }
+              if (typeof body.model === 'string' && sanitizeEnvValue(body.model)) {
+                writeLocalSecretKey(rootDir, meta.envModelKey, sanitizeEnvValue(body.model))
+              }
+              if (
+                meta.envBaseUrlKey &&
+                typeof body.baseUrl === 'string' &&
+                sanitizeEnvValue(body.baseUrl)
+              ) {
+                writeLocalSecretKey(rootDir, meta.envBaseUrlKey, sanitizeEnvValue(body.baseUrl))
+              }
             }
             if (typeof body.newCeoCode === 'string' && sanitizeEnvValue(body.newCeoCode).length >= 4) {
-              writeDotEnvKey(rootDir, 'BLEQUI_CEO_CODE', sanitizeEnvValue(body.newCeoCode))
+              writeLocalSecretKey(rootDir, 'BLEQUI_CEO_CODE', sanitizeEnvValue(body.newCeoCode))
             }
-            const { geminiApiKey } = getRuntimeConfig(rootDir)
-            return sendJson(res, 200, { ok: true, geminiConfigured: Boolean(geminiApiKey) })
+            const { anyAiConfigured, aiProviders } = getRuntimeConfig(rootDir)
+            return sendJson(res, 200, {
+              ok: true,
+              geminiConfigured: anyAiConfigured,
+              aiProviders,
+            })
           }
 
           if ((pathname === '/api/agency/chat' || pathname === '/api/agency/self-build') && method === 'POST') {
@@ -391,7 +494,7 @@ export function blequiAgencyServerPlugin(): Plugin {
             }
 
             const forceSelfBuild = pathname === '/api/agency/self-build'
-            const ceoName = String(body.ceoName || 'Co-CEO').trim()
+            const ceoName = String(body.ceoName || 'CEO').trim()
             const userMessage = forceSelfBuild
               ? String(body.prompt || 'Auto-crie melhorias no seu escritório privado agora!')
               : String(body.message || '').trim()
@@ -411,7 +514,7 @@ export function blequiAgencyServerPlugin(): Plugin {
             agent.chatHistory = agent.chatHistory.slice(-30)
             persistAndBroadcast()
 
-            const { geminiApiKey } = getRuntimeConfig(rootDir)
+            const { providerCredentials } = getRuntimeConfig(rootDir)
             let turn: Awaited<ReturnType<typeof runAgentConversationTurn>>
             try {
               turn = await runAgentConversationTurn({
@@ -419,7 +522,7 @@ export function blequiAgencyServerPlugin(): Plugin {
                 world: worldState,
                 userMessage,
                 ceoName,
-                apiKey: geminiApiKey || undefined,
+                providerCredentials,
                 rootDir,
                 forceSelfBuild,
               })
@@ -447,7 +550,7 @@ export function blequiAgencyServerPlugin(): Plugin {
             agent.logs.unshift({
               id: `log-${Date.now()}-c`,
               time: nowTimeLabel(),
-              message: `${ceoName} conversou com ${agent.name}${turn.usedLiveGemini ? ' (Gemini Live)' : ' (Simulação local)'}.`,
+              message: `${ceoName} conversou com ${agent.name} (${turn.providerUsed || (turn.usedLiveGemini ? 'Antigravity' : 'Modo Local')}).`,
               kind: 'chat',
             })
             agent.logs = agent.logs.slice(0, 25)
@@ -464,7 +567,7 @@ export function blequiAgencyServerPlugin(): Plugin {
 
           if (pathname === '/api/agency/reward' && method === 'POST') {
             const body = await readJsonBody(req)
-            const ceoName = String(body.ceoName || 'Co-CEO')
+            const ceoName = String(body.ceoName || 'CEO')
             const propId = body.propId ? String(body.propId) : null
             let targetAgentId = body.agentId ? String(body.agentId) : null
             let bonus = 10
@@ -516,7 +619,7 @@ export function blequiAgencyServerPlugin(): Plugin {
             const body = await readJsonBody(req)
             const proposalId = String(body.proposalId || '')
             const approve = Boolean(body.approve)
-            const ceoName = String(body.ceoName || 'Co-CEO')
+            const ceoName = String(body.ceoName || 'CEO')
             const idx = worldState.proposals.findIndex((p) => p.id === proposalId)
             if (idx === -1) {
               return sendJson(res, 404, { ok: false, error: 'Proposta não encontrada.' })
@@ -536,7 +639,7 @@ export function blequiAgencyServerPlugin(): Plugin {
                 modelLabel: providerMeta.defaultModel,
                 status: 'working',
                 currentTask: `Recém-chegado à Ilha Blequi graças à indicação de ${proposal.proposedByName}.`,
-                systemPrompt: `Você é ${proposal.name}, atuando como ${proposal.role} na agência virtual Blequi. Você sabe que vive na Ilha Blequi com as duas Co-CEOs e sua equipe, e suas criações 3D melhoram o cenário e seu próprio bem-estar.`,
+                systemPrompt: `Você é ${proposal.name}, atuando como ${proposal.role} na agência virtual Blequi. Você trabalha na Sede da Blequi com os CEOs Raynocas e Kafuzinho e sua equipe, e suas criações 3D melhoram o cenário e seu próprio bem-estar.`,
                 skills: proposal.skills,
                 accentColor: proposal.accentColor,
                 deskPosition: [zoneMeta.normalizedCenter[0] * 10, 0, zoneMeta.normalizedCenter[1] * 10],
@@ -627,7 +730,7 @@ export function blequiAgencyServerPlugin(): Plugin {
               }
             } else if (action === 'createAgent') {
               const input = body.input && typeof body.input === 'object' ? body.input : {}
-              const zone = (input.zone in STUDIO_ZONES ? input.zone : 'criacao') as StudioZoneId
+              const zone = (input.zone in STUDIO_ZONES ? input.zone : 'b2b-lab') as StudioZoneId
               const zoneMeta = STUDIO_ZONES[zone]
               const isAI = input.entityType !== 'human'
               const providerId: AgentProviderId | undefined = isAI
@@ -651,7 +754,7 @@ export function blequiAgencyServerPlugin(): Plugin {
                 currentTask: String(input.currentTask || 'Pronto para criar na Ilha Blequi.'),
                 systemPrompt:
                   String(input.systemPrompt || '').trim() ||
-                  `Você é ${input.name}, atuando como ${input.role} na agência virtual Blequi. Você vive na Ilha Blequi com as duas Co-CEOs e sente bem-estar real quando suas criações melhoram o cenário.`,
+                  `Você é ${input.name}, atuando como ${input.role} na agência virtual Blequi. Você trabalha na Sede da Blequi com os CEOs Raynocas e Kafuzinho e sente bem-estar real quando suas criações melhoram o cenário.`,
                 skills: Array.isArray(input.skills) ? input.skills : [],
                 accentColor: providerMeta ? providerMeta.color : '#d98a4e',
                 deskPosition: [
@@ -676,7 +779,7 @@ export function blequiAgencyServerPlugin(): Plugin {
                   interiorGlow: '#fde68a',
                   floorTone: 'oak',
                 },
-                memories: ['Cheguei na Ilha Blequi pronto(a) para colaborar com as Co-CEOs!'],
+                memories: ['Cheguei na Sede da Blequi pronto(a) para colaborar com os CEOs Raynocas e Kafuzinho!'],
                 chatHistory: [
                   {
                     id: `msg-${Date.now()}`,

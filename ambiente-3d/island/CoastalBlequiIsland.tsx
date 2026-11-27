@@ -146,7 +146,7 @@ export function CoastalBlequiIsland({
       {/* Partner Co-CEO (your friend!) walking live on the island with you */}
       {introStage === 'playing' && <PartnerCeoWalkers view="island" />}
 
-      {/* Your Playable Co-CEO Character + 3rd-Person Follow / Boat Intro / Customizer Camera Rig */}
+      {/* Your Playable CEO Character + 3rd-Person Follow / Boat Intro / Customizer Camera Rig */}
       <PlayablePlayerController
         introStage={introStage}
         isCustomizerOpen={isCustomizerOpen}
@@ -154,6 +154,7 @@ export function CoastalBlequiIsland({
         isModalOpen={isModalOpen}
         avatar={playerAvatar}
         agents={agents}
+        islandProps={islandProps}
         teleportTarget={teleportTarget}
         cameraResetTick={cameraResetTick}
         onClearTeleport={onClearTeleport}

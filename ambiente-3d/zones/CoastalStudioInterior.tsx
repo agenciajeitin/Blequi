@@ -72,8 +72,8 @@ const ZONE_PALETTES: Record<StudioZoneId, ZonePalette> = {
     accent: '#de6c80',
     rug: '#fde8ed',
     rugBorder: '#f6d35f',
-    screenTitle: 'SEDE BLEQUI · PAVILHÃO NORI',
-    screenSubtitle: 'Lounge das Co-CEOs · Bem-Estar & Celebrações',
+    screenTitle: 'SEDE DA BLEQUI',
+    screenSubtitle: 'Equipe Reunida · CEOs Raynocas & Kafuzinho',
   },
   editorial: {
     floor: '#e5cfa7',
@@ -229,11 +229,11 @@ function createZoneBoardTexture(zone: StudioZoneId, pal: ZonePalette): THREE.Can
       ctx.fill()
     })
   } else {
-    // Nori Lounge / Co-CEO celebration cards
+    // Sede da Blequi CEO celebration cards
     const cards = [
-      { title: '2 Co-CEOs', desc: 'Acesso privado em LAN', col: '#de6c80' },
-      { title: 'Bem-Estar', desc: 'Cada criação celebra a equipe', col: '#02c6a7' },
-      { title: 'Gemini Live', desc: 'Estúdios vivos & modulares', col: '#f6b93b' },
+      { title: 'CEOs', desc: 'Raynocas & Kafuzinho', col: '#de6c80' },
+      { title: 'Equipe Unida', desc: 'Luma, Kael, Vex & Nori', col: '#02c6a7' },
+      { title: 'Ilha Viva', desc: 'Criação colaborativa 60 FPS', col: '#f6b93b' },
     ]
     cards.forEach((c, i) => {
       const cx = 48 + i * 316

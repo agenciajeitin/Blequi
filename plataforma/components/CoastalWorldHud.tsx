@@ -274,7 +274,7 @@ export function CoastalWorldHud() {
             coastalAudio.playPop(620, 0.06)
             setCustomizerOpen(true)
           }}
-          aria-label="Personalizar seu avatar Co-CEO"
+          aria-label="Personalizar seu avatar CEO"
           title="Personalizar Avatar"
           className="cw-circle-btn"
         >

@@ -23,5 +23,5 @@
       "@plataforma/*": ["plataforma/*"]
     }
   },
-  "include": ["src", "ambiente-3d", "funcionarios", "projetos", "plataforma", "server"]
+  "include": ["src", "ambiente-3d", "funcionarios", "projetos", "plataforma", "server", "coastal-world-replica"]
 }

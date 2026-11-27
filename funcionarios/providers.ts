@@ -56,21 +56,20 @@ export const AGENT_PROVIDERS: Record<AgentProviderId, ProviderConfig> = {
   },
   codex: {
     id: 'codex',
-    name: 'Codex',
-    badge: 'CDX',
-    description: 'Engenharia de software autônoma, testes e entregas em sandbox.',
-    color: '#0ea5e9',
-    defaultModel: 'Codex Agent',
-    endpointHint: 'codex://sandbox-worker',
+    name: 'OpenAI',
+    badge: 'OAI',
+    description: 'Modelos OpenAI GPT / Codex com execução de ferramentas e código.',
+    color: '#10a37f',
+    defaultModel: 'gpt-4.1',
+    endpointHint: 'openai://chat-completions',
   },
 }
 
 export const PROVIDER_ORDER: AgentProviderId[] = [
-  'gemini',
   'antigravity',
   'opencode',
-  'claude',
   'codex',
+  'claude',
 ]
 
 export const ROOM_SCALES: Record<RoomScaleId, RoomScaleMeta> = {
@@ -120,8 +119,8 @@ export const ROOM_SCALE_ORDER: RoomScaleId[] = [
 ]
 
 export const ROLE_PRESETS: string[] = [
-  'Co-CEO & Fundadora',
-  'Co-CEO & Direção Criativa',
+  'CEO · Ambientação & Estética',
+  'CEO · Edifícios & Animações',
   'Diretor de Arte 3D',
   'Creative Developer WebGL',
   'Technical Artist (FPS)',
@@ -250,10 +249,10 @@ export const STUDIO_ZONES: Record<StudioZoneId, StudioZoneMeta> = {
   },
   'b2b-lab': {
     id: 'b2b-lab',
-    name: 'Pavilhão Nori · Lounge & Bem-Estar',
-    shortName: 'Lounge & CEOs',
-    subtitle: 'Praça social, memórias da equipe e celebrações com as CEOs',
-    color: '#10b981',
+    name: 'Sede da Blequi',
+    shortName: 'Sede da Blequi',
+    subtitle: 'Edifício central da equipe Blequi e dos CEOs Raynocas & Kafuzinho',
+    color: '#de6c80',
     normalizedCenter: [0, 0],
     normalizedSize: [0.22, 0.22],
     islandPosition: [6.4, 0, 5.2],

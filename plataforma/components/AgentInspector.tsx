@@ -57,9 +57,14 @@ export function AgentInspector() {
 
   const [tab, setTab] = useState<'chat' | 'wellbeing' | 'config'>('chat')
   const [draft, setDraft] = useState('')
+  const [confirmFire, setConfirmFire] = useState(false)
   const chatEndRef = useRef<HTMLDivElement>(null)
 
   const agent = agents.find((a) => a.id === selectedAgentId)
+
+  useEffect(() => {
+    setConfirmFire(false)
+  }, [selectedAgentId])
 
   useEffect(() => {
     chatEndRef.current?.scrollIntoView({ behavior: 'smooth' })
@@ -124,9 +129,46 @@ export function AgentInspector() {
                 className="inline-flex items-center gap-1 rounded-full bg-[#eef4fc] px-2.5 py-0.5 text-[11px] font-extrabold text-[#3b3777] hover:bg-[#e1ecfb]"
               >
                 <Building2 className="h-3 w-3 text-[#02c6a7]" />
-                {worldView === 'island' ? 'Entrar no Estúdio' : zone.shortName}
+                {worldView === 'island' ? 'Entrar na Sede' : zone.shortName}
+              </button>
+              <button
+                type="button"
+                onClick={() => setConfirmFire((prev) => !prev)}
+                className="inline-flex items-center gap-1 rounded-full bg-[#fff0f1] px-2.5 py-0.5 text-[11px] font-extrabold text-[#f2676f] hover:bg-[#ffe1e4]"
+                title={`Mandar ${agent.name} embora`}
+              >
+                <Trash2 className="h-3 w-3" />
+                Mandar embora
               </button>
             </div>
+
+            {confirmFire && (
+              <div className="mt-2.5 rounded-2xl border border-[#fecdd3] bg-[#fff1f2] p-2.5 text-xs">
+                <p className="font-extrabold text-[#be123c]">
+                  Mandar {agent.name} embora da Blequi?
+                </p>
+                <div className="mt-2 flex gap-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      coastalAudio.playPop(360, 0.08)
+                      setConfirmFire(false)
+                      void removeAgent(agent.id)
+                    }}
+                    className="rounded-full bg-[#f2676f] px-3 py-1 text-[11px] font-extrabold text-white hover:brightness-105"
+                  >
+                    Sim, mandar embora
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setConfirmFire(false)}
+                    className="rounded-full bg-white px-3 py-1 text-[11px] font-bold text-[#6c6996] hover:bg-[#f1f5f9]"
+                  >
+                    Cancelar
+                  </button>
+                </div>
+              </div>
+            )}
           </div>
 
           <button
@@ -474,11 +516,11 @@ export function AgentInspector() {
 
           <button
             type="button"
-            onClick={() => removeAgent(agent.id)}
+            onClick={() => setConfirmFire(true)}
             className="flex w-full items-center justify-center gap-2 rounded-full bg-[#fff0f1] py-2.5 text-xs font-extrabold text-[#f2676f] hover:bg-[#ffe1e4]"
           >
             <Trash2 className="h-3.5 w-3.5" />
-            Remover da Ilha Blequi
+            Mandar {agent.name} embora
           </button>
         </div>
       )}

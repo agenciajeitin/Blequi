@@ -12,6 +12,7 @@ import {
   Plus,
   Shirt,
   Sparkles,
+  Trash2,
   Users,
   X,
 } from 'lucide-react'
@@ -62,10 +63,12 @@ export function CoastalPhoneModal() {
   const teleportPlayerTo = useAgencyStore((s) => s.teleportPlayerTo)
   const enterStudioZone = useAgencyStore((s) => s.enterStudioZone)
   const selectAgent = useAgencyStore((s) => s.selectAgent)
+  const removeAgent = useAgencyStore((s) => s.removeAgent)
   const rewardAgentOrProp = useAgencyStore((s) => s.rewardAgentOrProp)
   const toggleDeliverable = useAgencyStore((s) => s.toggleDeliverable)
 
   const [selectedPinZone, setSelectedPinZone] = useState<Exclude<StudioZoneId, 'editorial'> | null>(null)
+  const [confirmFireId, setConfirmFireId] = useState<string | null>(null)
   const [playerPin, setPlayerPin] = useState(() => worldToMapPercent(playerLiveTransform.x, playerLiveTransform.z))
 
   useEffect(() => {
@@ -217,7 +220,7 @@ export function CoastalPhoneModal() {
                         key={partner.id}
                         className="pointer-events-none absolute z-10 -translate-x-1/2 -translate-y-1/2 transition-all duration-200"
                         style={{ left: `${pp.x}%`, top: `${pp.y}%` }}
-                        title={`${partner.name} (Co-CEO)`}
+                        title={`${partner.name} (CEO)`}
                       >
                         <div className="flex h-8 w-8 items-center justify-center rounded-full border-[3px] border-white bg-[#f6b93b] text-xs shadow-[0_0_0_5px_rgba(246,185,59,0.35)]">
                           👑
@@ -252,7 +255,7 @@ export function CoastalPhoneModal() {
                               style={{ backgroundColor: loc.badgeColor }}
                             />
                             <span className="mt-0.5 text-[8px] font-black leading-none text-[#3b3777]">
-                              {owner?.name || STUDIO_ZONES[zoneId].shortName}
+                              {zoneId === 'b2b-lab' ? 'Sede' : owner?.name || STUDIO_ZONES[zoneId].shortName}
                             </span>
                           </div>
                         </div>
@@ -267,10 +270,16 @@ export function CoastalPhoneModal() {
                     <div className="flex items-start justify-between gap-2">
                       <div>
                         <p className="text-[11px] font-extrabold uppercase tracking-wide text-[#02c6a7]">
-                          {selectedPinOwner ? `Estúdio de ${selectedPinOwner.name}` : 'Mini-Estúdio'}
+                          {selectedPinZone === 'b2b-lab'
+                            ? 'Edifício Central'
+                            : selectedPinOwner
+                              ? `Estúdio de ${selectedPinOwner.name}`
+                              : 'Mini-Estúdio'}
                         </p>
                         <h3 className="text-sm font-black text-[#3b3777]">
-                          {selectedPinOwner?.studioTheme.studioName || selectedPinMeta.name}
+                          {selectedPinZone === 'b2b-lab'
+                            ? selectedPinMeta.name
+                            : selectedPinOwner?.studioTheme.studioName || selectedPinMeta.name}
                         </h3>
                       </div>
                       <button
@@ -370,11 +379,11 @@ export function CoastalPhoneModal() {
                         </div>
                       </div>
 
-                      <div className="mt-3 grid grid-cols-2 gap-2">
+                      <div className="mt-3 flex items-center gap-1.5">
                         <button
                           type="button"
                           onClick={() => selectAgent(ag.id)}
-                          className="flex items-center justify-center gap-1.5 rounded-full bg-[#f1f5fc] py-1.5 text-xs font-extrabold text-[#3b3777] hover:bg-[#e4ecf9]"
+                          className="flex flex-1 items-center justify-center gap-1.5 rounded-full bg-[#f1f5fc] py-1.5 text-xs font-extrabold text-[#3b3777] hover:bg-[#e4ecf9]"
                         >
                           <MessageCircle className="h-3.5 w-3.5 text-[#3b82f6]" />
                           Conversar
@@ -382,12 +391,46 @@ export function CoastalPhoneModal() {
                         <button
                           type="button"
                           onClick={() => enterStudioZone(ag.zone)}
-                          className="flex items-center justify-center gap-1.5 rounded-full bg-[#02c6a7] py-1.5 text-xs font-extrabold text-white hover:brightness-105"
+                          className="flex flex-1 items-center justify-center gap-1.5 rounded-full bg-[#02c6a7] py-1.5 text-xs font-extrabold text-white hover:brightness-105"
                         >
                           <Building2 className="h-3.5 w-3.5" />
-                          Estúdio
+                          Sede
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setConfirmFireId(confirmFireId === ag.id ? null : ag.id)}
+                          title={`Mandar ${ag.name} embora`}
+                          className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-[#fff0f1] text-[#f2676f] hover:bg-[#ffe1e4]"
+                        >
+                          <Trash2 className="h-3.5 w-3.5" />
                         </button>
                       </div>
+
+                      {confirmFireId === ag.id && (
+                        <div className="mt-2.5 flex items-center justify-between gap-2 rounded-2xl bg-[#fff1f2] px-3 py-2 text-[11px]">
+                          <span className="font-extrabold text-[#be123c]">Mandar embora?</span>
+                          <div className="flex gap-1.5">
+                            <button
+                              type="button"
+                              onClick={() => {
+                                coastalAudio.playPop(360, 0.08)
+                                setConfirmFireId(null)
+                                void removeAgent(ag.id)
+                              }}
+                              className="rounded-full bg-[#f2676f] px-2.5 py-0.5 font-extrabold text-white"
+                            >
+                              Sim
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => setConfirmFireId(null)}
+                              className="rounded-full bg-white px-2.5 py-0.5 font-bold text-[#6c6996]"
+                            >
+                              Não
+                            </button>
+                          </div>
+                        </div>
+                      )}
                     </div>
                   )
                 })}
@@ -411,7 +454,7 @@ export function CoastalPhoneModal() {
                         {liveFps} FPS
                       </span>
                       <span className="text-[10px] font-bold opacity-90">
-                        {onlineCeos.length || 1} Co-CEO online
+                        {onlineCeos.length || 1} CEO online
                       </span>
                     </div>
                   </div>
@@ -482,7 +525,7 @@ export function CoastalPhoneModal() {
                 </div>
 
                 <div>
-                  <h3 className="text-lg font-black text-[#3b3777]">Seu Avatar Co-CEO</h3>
+                  <h3 className="text-lg font-black text-[#3b3777]">Seu Avatar CEO</h3>
                   <p className="mt-1 text-xs font-semibold text-[#7976a3]">
                     Mude cores, expressão, fone, gorro, coroa, mochila, asas e tênis ao vivo em 3D!
                   </p>

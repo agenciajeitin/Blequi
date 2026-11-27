@@ -57,7 +57,7 @@ export function TopBar() {
       <button
         type="button"
         onClick={openEntryHud}
-        title="Editar perfil de Co-CEO"
+        title="Trocar CEO"
         className="pointer-events-auto flex items-center gap-3 rounded-2xl border border-slate-200/12 bg-[#141822]/85 px-3 py-2 text-left backdrop-blur-xl shadow-xl shadow-black/40 transition-colors hover:border-slate-200/25 cursor-pointer"
       >
         <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-xl bg-gradient-to-br from-amber-400 to-orange-500 text-slate-950">
@@ -66,7 +66,7 @@ export function TopBar() {
         <div className="min-w-0">
           <div className="flex items-center gap-1.5">
             <span className="truncate text-xs font-bold text-white">
-              {currentUser?.name ?? 'Co-CEO'}
+              {currentUser?.name ?? 'CEO'}
             </span>
             <span
               className={`h-2 w-2 rounded-full ${liveConnected ? 'bg-emerald-400' : 'bg-amber-400'}`}
@@ -75,8 +75,8 @@ export function TopBar() {
           </div>
           <p className="truncate text-[11px] text-slate-400">
             {onlineCeos.length >= 2
-              ? `2 Co-CEOs online (${onlineCeos.map((c) => c.name).join(' & ')})`
-              : `${currentUser?.role ?? 'Co-CEO'} · Privado`}
+              ? `CEOs online (${onlineCeos.map((c) => c.name).join(' & ')})`
+              : `${currentUser?.role ?? 'CEO'} · Privado`}
           </p>
         </div>
       </button>

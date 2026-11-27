@@ -22,13 +22,16 @@ import type {
 } from '@funcionarios/types'
 import { createInitialWorldState } from '@funcionarios/roster'
 import { AGENT_PROVIDERS } from '@funcionarios/providers'
+import type { ExternalAiProviderId, ExternalAiProviderStatus } from '@funcionarios/aiProvidersCatalog'
 import { COASTAL_STUDIO_LOCATIONS } from '@ambiente/island/CoastalStudios'
 import type { AgencyProject } from '@projetos/types'
 import { INITIAL_PROJECTS } from '@projetos/catalog'
 
 const STORAGE_KEY = 'blequi.agency.userProfile.v2'
 const CEO_CODE_STORAGE_KEY = 'blequi.agency.ceoCode.v1'
+const REMEMBER_CEO_STORAGE_KEY = 'blequi.agency.rememberCeo.v1'
 const AVATAR_STORAGE_KEY = 'blequi.coastal.avatar.v1'
+const PLAYER_POS_STORAGE_KEY = 'blequi.coastal.lastPosition.v1'
 
 export type CameraPreset = 'overview' | StudioZoneId
 
@@ -40,6 +43,7 @@ export interface ServerMeta {
   onlineCeos: OnlineCeoPresence[]
   agentCount: number
   propCount: number
+  aiProviders?: ExternalAiProviderStatus[]
 }
 
 interface EntryInput {
@@ -51,6 +55,7 @@ interface EntryInput {
   roomScale: RoomScaleId
   ceoSlot: 'ceo-1' | 'ceo-2'
   ceoCode: string
+  rememberPassword?: boolean
 }
 
 interface NewAgentInput {
@@ -73,12 +78,59 @@ export const DEFAULT_PLAYER_AVATAR: PlayerAvatarConfig = {
   shoeStyle: 'sneakers',
 }
 
+function loadSavedPlayerPosition(): { x: number; y: number; z: number; rotationY: number } {
+  const fallback = { x: 0, y: 0.26, z: 22.8, rotationY: Math.PI }
+  if (typeof window === 'undefined') return fallback
+  try {
+    const raw = window.localStorage.getItem(PLAYER_POS_STORAGE_KEY)
+    if (!raw) return fallback
+    const parsed = JSON.parse(raw) as Partial<{ x: number; y: number; z: number; rotationY: number }>
+    if (
+      typeof parsed.x === 'number' &&
+      Number.isFinite(parsed.x) &&
+      typeof parsed.y === 'number' &&
+      Number.isFinite(parsed.y) &&
+      typeof parsed.z === 'number' &&
+      Number.isFinite(parsed.z)
+    ) {
+      return {
+        x: Math.max(-22, Math.min(22, parsed.x)),
+        y: Math.max(0.2, Math.min(3, parsed.y)),
+        z: Math.max(-16, Math.min(25.5, parsed.z)),
+        rotationY: typeof parsed.rotationY === 'number' && Number.isFinite(parsed.rotationY) ? parsed.rotationY : Math.PI,
+      }
+    }
+    return fallback
+  } catch {
+    return fallback
+  }
+}
+
+export function persistPlayerIslandPosition(x: number, y: number, z: number, rotationY: number) {
+  if (typeof window === 'undefined') return
+  try {
+    window.localStorage.setItem(
+      PLAYER_POS_STORAGE_KEY,
+      JSON.stringify({
+        x: Number(x.toFixed(3)),
+        y: Number(y.toFixed(3)),
+        z: Number(z.toFixed(3)),
+        rotationY: Number(rotationY.toFixed(3)),
+      })
+    )
+  } catch {
+    // Ignore storage errors
+  }
+}
+
+const initialSavedPos = loadSavedPlayerPosition()
+
 /** Shared mutable world coordinates for zero-rerender 60 FPS player & minimap sync */
 export const playerLiveTransform = {
-  x: 0,
-  y: 0.25,
-  z: 22.8,
-  rotationY: Math.PI, // Facing North (-Z) down the pier toward the Clocktower Plaza
+  x: initialSavedPos.x,
+  y: initialSavedPos.y,
+  z: initialSavedPos.z,
+  rotationY: initialSavedPos.rotationY,
   isMoving: false,
 }
 
@@ -94,6 +146,7 @@ export const studioPlayerLiveTransform = {
 interface AgencyState {
   currentUser: AgencyUserProfile | null
   ceoCode: string
+  rememberPassword: boolean
   hasEnteredAgency: boolean
   introStage: CoastalIntroStage
   isCeoLoginOpen: boolean
@@ -140,6 +193,7 @@ interface AgencyState {
 
   fetchServerMeta: () => Promise<void>
   enterAgency: (input: EntryInput) => Promise<{ ok: boolean; error?: string }>
+  tryAutoLogin: () => Promise<boolean>
   quickStartJourney: () => Promise<void>
   finishWelcomeIntro: () => void
   openEntryHud: () => void
@@ -189,7 +243,14 @@ interface AgencyState {
   createAgent: (input: NewAgentInput) => Promise<void>
   removeAgent: (id: string) => Promise<void>
   removeProp: (propId: string) => Promise<void>
-  saveServerConfig: (payload: { geminiApiKey?: string; newCeoCode?: string }) => Promise<{ ok: boolean; error?: string }>
+  saveServerConfig: (payload: {
+    providerId?: ExternalAiProviderId
+    apiKey?: string
+    model?: string
+    baseUrl?: string
+    geminiApiKey?: string
+    newCeoCode?: string
+  }) => Promise<{ ok: boolean; error?: string }>
   toggleDeliverable: (projectId: string, deliverableId: string) => void
 }
 
@@ -217,11 +278,23 @@ function loadSavedProfile(): AgencyUserProfile | null {
   }
 }
 
+function loadRememberPassword(): boolean {
+  try {
+    const raw = window.localStorage.getItem(REMEMBER_CEO_STORAGE_KEY)
+    if (raw === '0') return false
+    if (raw === '1') return true
+    return Boolean(window.localStorage.getItem(CEO_CODE_STORAGE_KEY))
+  } catch {
+    return false
+  }
+}
+
 function loadSavedCeoCode(): string {
   try {
-    return window.localStorage.getItem(CEO_CODE_STORAGE_KEY) || 'blequi-ceo'
+    if (!loadRememberPassword()) return ''
+    return window.localStorage.getItem(CEO_CODE_STORAGE_KEY) || ''
   } catch {
-    return 'blequi-ceo'
+    return ''
   }
 }
 
@@ -242,10 +315,15 @@ function loadSavedAvatar(): PlayerAvatarConfig {
   }
 }
 
-function persistProfile(profile: AgencyUserProfile, ceoCode: string) {
+function persistProfile(profile: AgencyUserProfile, ceoCode: string, rememberPassword = true) {
   try {
     window.localStorage.setItem(STORAGE_KEY, JSON.stringify(profile))
-    window.localStorage.setItem(CEO_CODE_STORAGE_KEY, ceoCode)
+    window.localStorage.setItem(REMEMBER_CEO_STORAGE_KEY, rememberPassword ? '1' : '0')
+    if (rememberPassword && ceoCode) {
+      window.localStorage.setItem(CEO_CODE_STORAGE_KEY, ceoCode)
+    } else {
+      window.localStorage.removeItem(CEO_CODE_STORAGE_KEY)
+    }
   } catch {
     // Ignore storage errors
   }
@@ -329,7 +407,8 @@ export const useAgencyStore = create<AgencyState>((set, get) => {
 
   return {
     currentUser: typeof window !== 'undefined' ? loadSavedProfile() : null,
-    ceoCode: typeof window !== 'undefined' ? loadSavedCeoCode() : 'blequi-ceo',
+    ceoCode: typeof window !== 'undefined' ? loadSavedCeoCode() : '',
+    rememberPassword: typeof window !== 'undefined' ? loadRememberPassword() : true,
     hasEnteredAgency: false,
     introStage: 'boat',
     isCeoLoginOpen: false,
@@ -480,13 +559,36 @@ export const useAgencyStore = create<AgencyState>((set, get) => {
       }
     },
 
+    tryAutoLogin: async () => {
+      const state = get()
+      if (state.hasEnteredAgency) return true
+      if (!state.rememberPassword || !state.currentUser?.name || !state.ceoCode) {
+        return false
+      }
+      const res = await state.enterAgency({
+        name: state.currentUser.name,
+        entityType: 'human',
+        role: state.currentUser.role || 'CEO',
+        skills: state.currentUser.skills?.length ? state.currentUser.skills : ['Ilha Blequi'],
+        roomScale: state.roomScale,
+        ceoSlot: state.currentUser.ceoSlot || 'ceo-1',
+        ceoCode: state.ceoCode,
+        rememberPassword: true,
+      })
+      if (res.ok) {
+        set({ introStage: 'playing', hasEnteredAgency: true, isCeoLoginOpen: false })
+        return true
+      }
+      return false
+    },
+
     quickStartJourney: async () => {
       const saved = get().currentUser
       const code = get().ceoCode || 'blequi-ceo'
       const result = await get().enterAgency({
-        name: saved?.name || 'Co-CEO Blequi',
+        name: saved?.name || 'Raynocas',
         entityType: 'human',
-        role: saved?.role || 'Co-CEO & Fundadora',
+        role: saved?.role || 'CEO · Ambientação & Estética',
         skills: saved?.skills?.length ? saved.skills : ['Direção de Arte', 'Diorama 3D'],
         roomScale: get().roomScale,
         ceoSlot: saved?.ceoSlot || 'ceo-1',
@@ -535,13 +637,25 @@ export const useAgencyStore = create<AgencyState>((set, get) => {
         })
         const data = await res.json()
         if (!res.ok || !data.ok) {
-          return { ok: false, error: data.error || 'Chave CEO inválida.' }
+          return { ok: false, error: data.error || 'Login ou senha inválidos.' }
         }
 
-        persistProfile(profile, input.ceoCode.trim())
+        const resolvedProfile: AgencyUserProfile = data.ceo
+          ? {
+              ...profile,
+              id: `ceo-${data.ceo.slot}`,
+              name: data.ceo.name,
+              role: data.ceo.role,
+              ceoSlot: data.ceo.slot,
+            }
+          : profile
+
+        const shouldRemember = input.rememberPassword ?? get().rememberPassword
+        persistProfile(resolvedProfile, input.ceoCode.trim(), shouldRemember)
         set({
-          currentUser: profile,
+          currentUser: resolvedProfile,
           ceoCode: input.ceoCode.trim(),
+          rememberPassword: shouldRemember,
           hasEnteredAgency: true,
           isCeoLoginOpen: false,
           worldView: 'island',
@@ -554,10 +668,37 @@ export const useAgencyStore = create<AgencyState>((set, get) => {
         get().fetchServerMeta()
         return { ok: true }
       } catch {
-        persistProfile(profile, input.ceoCode.trim())
+        const normalized = input.name
+          .trim()
+          .toLowerCase()
+          .normalize('NFD')
+          .replace(/[\u0300-\u036f]/g, '')
+        if (
+          normalized !== 'raynocas' &&
+          normalized !== 'ray' &&
+          normalized !== 'kafuzinho' &&
+          normalized !== 'kafu' &&
+          normalized !== 'kafuzin'
+        ) {
+          return {
+            ok: false,
+            error: 'Login não reconhecido. Apenas os CEOs Raynocas e Kafuzinho podem entrar.',
+          }
+        }
+        const isKafu = normalized === 'kafuzinho' || normalized === 'kafu' || normalized === 'kafuzin'
+        const resolvedProfile: AgencyUserProfile = {
+          ...profile,
+          id: isKafu ? 'ceo-ceo-2' : 'ceo-ceo-1',
+          name: isKafu ? 'Kafuzinho' : 'Raynocas',
+          role: isKafu ? 'CEO · Edifícios & Animações' : 'CEO · Ambientação & Estética',
+          ceoSlot: isKafu ? 'ceo-2' : 'ceo-1',
+        }
+        const shouldRemember = input.rememberPassword ?? get().rememberPassword
+        persistProfile(resolvedProfile, input.ceoCode.trim(), shouldRemember)
         set({
-          currentUser: profile,
+          currentUser: resolvedProfile,
           ceoCode: input.ceoCode.trim(),
+          rememberPassword: shouldRemember,
           hasEnteredAgency: true,
           isCeoLoginOpen: false,
           worldView: 'island',
@@ -575,14 +716,13 @@ export const useAgencyStore = create<AgencyState>((set, get) => {
 
     setWorldView: async (worldView, zone) => {
       const nextZone = zone ?? get().activeStudioZone
-      set((state) => ({
+      set({
         worldView,
         activeStudioZone: nextZone,
         isPhoneOpen: false,
         isMenuOpen: false,
         isCustomizerOpen: false,
-        cameraResetTick: state.cameraResetTick + 1,
-      }))
+      })
       try {
         const res = await fetch('/api/agency/patch', {
           method: 'POST',
@@ -595,7 +735,7 @@ export const useAgencyStore = create<AgencyState>((set, get) => {
     },
 
     enterStudioZone: async (zone) => {
-      set((state) => ({
+      set({
         worldView: 'studio',
         activeStudioZone: zone,
         isStudioPickerOpen: false,
@@ -606,8 +746,7 @@ export const useAgencyStore = create<AgencyState>((set, get) => {
         isMenuOpen: false,
         isCustomizerOpen: false,
         speechBubble: null,
-        cameraResetTick: state.cameraResetTick + 1,
-      }))
+      })
       get().broadcastCeoMove([0, 0, 4.8], Math.PI, false)
       try {
         const res = await fetch('/api/agency/patch', {
@@ -625,8 +764,9 @@ export const useAgencyStore = create<AgencyState>((set, get) => {
       const doorExit =
         prevZone !== 'editorial' && prevZone in COASTAL_STUDIO_LOCATIONS
           ? COASTAL_STUDIO_LOCATIONS[prevZone].teleportPoint
-          : ([0, 0.26, 22.8] as [number, number, number])
-      set((state) => ({
+          : ([playerLiveTransform.x, playerLiveTransform.y, playerLiveTransform.z] as [number, number, number])
+      persistPlayerIslandPosition(doorExit[0], doorExit[1], doorExit[2], 0)
+      set({
         worldView: 'island',
         selectedAgentId: null,
         nearbyInteractable: null,
@@ -634,8 +774,7 @@ export const useAgencyStore = create<AgencyState>((set, get) => {
         isPhoneOpen: false,
         isMenuOpen: false,
         isCustomizerOpen: false,
-        cameraResetTick: state.cameraResetTick + 1,
-      }))
+      })
       get().broadcastCeoMove(doorExit, 0, false)
       try {
         const res = await fetch('/api/agency/patch', {
@@ -722,7 +861,7 @@ export const useAgencyStore = create<AgencyState>((set, get) => {
     setSettingsOpen: (open) => set({ isSettingsOpen: open, isMenuOpen: false, isPhoneOpen: false }),
 
     sendChatMessage: async (agentId, message) => {
-      const ceoName = get().currentUser?.name || 'Co-CEO'
+      const ceoName = get().currentUser?.name || 'CEO'
       set((s) => ({ chatPendingByAgent: { ...s.chatPendingByAgent, [agentId]: true } }))
       try {
         const res = await fetch('/api/agency/chat', {
@@ -746,7 +885,7 @@ export const useAgencyStore = create<AgencyState>((set, get) => {
     },
 
     triggerSelfBuild: async (agentId, customPrompt) => {
-      const ceoName = get().currentUser?.name || 'Co-CEO'
+      const ceoName = get().currentUser?.name || 'CEO'
       set((s) => ({ chatPendingByAgent: { ...s.chatPendingByAgent, [agentId]: true } }))
       try {
         const res = await fetch('/api/agency/self-build', {
@@ -770,7 +909,7 @@ export const useAgencyStore = create<AgencyState>((set, get) => {
     },
 
     rewardAgentOrProp: async ({ agentId, propId, reason }) => {
-      const ceoName = get().currentUser?.name || 'Co-CEO'
+      const ceoName = get().currentUser?.name || 'CEO'
       const res = await fetch('/api/agency/reward', {
         method: 'POST',
         headers: apiHeaders(),
@@ -782,7 +921,7 @@ export const useAgencyStore = create<AgencyState>((set, get) => {
     },
 
     resolveProposal: async (proposalId, approve) => {
-      const ceoName = get().currentUser?.name || 'Co-CEO'
+      const ceoName = get().currentUser?.name || 'CEO'
       const res = await fetch('/api/agency/proposal', {
         method: 'POST',
         headers: apiHeaders(),

@@ -10,8 +10,9 @@ dist/
 !.env.example
 *.local
 
-# Runtime world state (each host persists locally; live sync runs over SSE)
+# Runtime world state & local API keys (each host persists locally; NEVER commit!)
 estado-mundo/agency-state.json
+estado-mundo/ai-keys.local.json
 !estado-mundo/.gitkeep
 
 # OS & editor junk
@@ -20,5 +21,6 @@ Thumbs.db
 desktop.ini
 *.log
 
-# Temporary AI scratchpad
+# Temporary AI scratchpad & auto-edit backups
 _rascunhos-ia/
+.blequi-backups/

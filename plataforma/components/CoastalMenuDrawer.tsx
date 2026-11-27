@@ -89,7 +89,7 @@ export function CoastalMenuDrawer() {
               <div className="min-w-0 flex-1">
                 <div className="flex items-center gap-1.5">
                   <p className="truncate text-sm font-black text-[#3b3777]">
-                    {currentUser?.name || 'Co-CEO Blequi'}
+                    {currentUser?.name || 'CEO'}
                   </p>
                   <span
                     className={`h-2.5 w-2.5 rounded-full ${liveConnected ? 'bg-[#02c6a7]' : 'bg-[#f6b93b]'}`}
@@ -97,8 +97,8 @@ export function CoastalMenuDrawer() {
                 </div>
                 <p className="truncate text-xs font-semibold text-[#7976a3]">
                   {onlineCeos.length >= 2
-                    ? `2 Co-CEOs online (${onlineCeos.map((c) => c.name).join(' & ')})`
-                    : `${currentUser?.role || 'Co-CEO & Fundadora'}`}
+                    ? `CEOs online (${onlineCeos.map((c) => c.name).join(' & ')})`
+                    : `${currentUser?.role || 'CEO · Ilha Blequi'}`}
                 </p>
               </div>
             </div>
@@ -213,7 +213,7 @@ export function CoastalMenuDrawer() {
               className="flex w-full items-center justify-center gap-2 rounded-full bg-[#f7f9fd] py-2.5 text-xs font-extrabold text-[#6c6996] transition-colors hover:bg-[#edf2fa] hover:text-[#3b3777]"
             >
               <Crown className="h-3.5 w-3.5 text-[#f6b93b]" />
-              Trocar Assento Co-CEO 1 / Co-CEO 2
+              Trocar CEO (Raynocas / Kafuzinho)
             </button>
           </div>
         </div>
@@ -225,7 +225,7 @@ export function CoastalMenuDrawer() {
             Qualidade Adaptativa · {liveFps} FPS
           </div>
           <p className="mt-2.5 text-[11px] font-semibold leading-relaxed text-[#8d8bb0]">
-            Ilha Blequi — Agência Virtual Privada das duas Co-CEOs sincronizada localmente em tempo real.
+            Ilha Blequi — Agência Virtual Privada dos CEOs Raynocas &amp; Kafuzinho.
           </p>
         </footer>
       </aside>

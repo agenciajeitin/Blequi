@@ -1,11 +1,19 @@
 import { useEffect, useRef, useState } from 'react'
 import { useFrame, useThree } from '@react-three/fiber'
 import * as THREE from 'three'
-import type { AgentEmployee, CoastalIntroStage, NearbyInteractable, PlayerAvatarConfig } from '@funcionarios/types'
+import type {
+  AgentEmployee,
+  CoastalIntroStage,
+  NearbyInteractable,
+  PlayerAvatarConfig,
+  WorldCreationProp,
+} from '@funcionarios/types'
 import { STUDIO_ZONES } from '@funcionarios/providers'
-import { playerLiveTransform } from '@plataforma/store/useAgencyStore'
+import { persistPlayerIslandPosition, playerLiveTransform } from '@plataforma/store/useAgencyStore'
+import { coastalAudio } from '../audio/coastalAudio'
 import { CoastalCharacterMesh } from '../avatars/CoastalCharacterMesh'
 import { COASTAL_STUDIO_LOCATIONS } from './CoastalStudios'
+import { resolveIslandCollisions } from './islandColliders'
 
 /** Shared pointer joystick vector driven by CoastalWorldHud drag overlay */
 export const virtualJoystick = {
@@ -21,6 +29,7 @@ interface PlayablePlayerControllerProps {
   isModalOpen: boolean
   avatar: PlayerAvatarConfig
   agents: AgentEmployee[]
+  islandProps: WorldCreationProp[]
   teleportTarget: [number, number, number] | null
   cameraResetTick: number
   onClearTeleport: () => void
@@ -77,6 +86,7 @@ export function PlayablePlayerController({
   isModalOpen,
   avatar,
   agents,
+  islandProps,
   teleportTarget,
   cameraResetTick,
   onClearTeleport,
@@ -96,6 +106,8 @@ export function PlayablePlayerController({
   const currentLookAt = useRef(new THREE.Vector3(0.5, 1.8, 30.0))
   const nearbyTimerRef = useRef(0)
   const presenceTimerRef = useRef(0)
+  const persistTimerRef = useRef(0)
+  const bumpCooldownRef = useRef(0)
   const lastNearbyIdRef = useRef<string | null>(null)
   const hasSnappedIntroRef = useRef(false)
 
@@ -130,6 +142,12 @@ export function PlayablePlayerController({
     playerLiveTransform.z = tz
     playerLiveTransform.y = sampleIslandGroundY(tx, tz)
     playerLiveTransform.rotationY = Math.PI
+    persistPlayerIslandPosition(
+      playerLiveTransform.x,
+      playerLiveTransform.y,
+      playerLiveTransform.z,
+      playerLiveTransform.rotationY
+    )
     if (playerGroupRef.current) {
       playerGroupRef.current.position.set(playerLiveTransform.x, playerLiveTransform.y, playerLiveTransform.z)
       playerGroupRef.current.rotation.y = playerLiveTransform.rotationY
@@ -137,13 +155,14 @@ export function PlayablePlayerController({
     onClearTeleport()
   }, [teleportTarget, onClearTeleport])
 
-  // Reset player smoothly back to iconic Pier Spawn on explicit camera reset
+  // Reset player smoothly back to Pier Spawn ONLY when explicitly requested via cameraResetTick
   useEffect(() => {
     if (cameraResetTick === 0) return
     playerLiveTransform.x = 0
     playerLiveTransform.z = 22.8
     playerLiveTransform.y = 0.26
     playerLiveTransform.rotationY = Math.PI
+    persistPlayerIslandPosition(0, 0.26, 22.8, Math.PI)
     if (playerGroupRef.current) {
       playerGroupRef.current.position.set(0, 0.26, 22.8)
       playerGroupRef.current.rotation.y = Math.PI
@@ -201,6 +220,10 @@ export function PlayablePlayerController({
     const mag = Math.hypot(inputX, inputZ)
     const isMovingNow = mag > 0.08
 
+    if (bumpCooldownRef.current > 0) {
+      bumpCooldownRef.current = Math.max(0, bumpCooldownRef.current - dt)
+    }
+
     if (isMovingNow) {
       onFirstMove()
       const speed = 7.2 * Math.min(1, mag)
@@ -208,7 +231,25 @@ export function PlayablePlayerController({
       const dirZ = inputZ / mag
       const nextX = playerLiveTransform.x + dirX * speed * dt
       const nextZ = playerLiveTransform.z + dirZ * speed * dt
-      const [cx, cz] = clampWalkablePosition(nextX, nextZ, playerLiveTransform.x, playerLiveTransform.z)
+      const [clampedX, clampedZ] = clampWalkablePosition(
+        nextX,
+        nextZ,
+        playerLiveTransform.x,
+        playerLiveTransform.z
+      )
+      const resolved = resolveIslandCollisions(clampedX, clampedZ, 0.46, islandProps)
+      const [cx, cz] = clampWalkablePosition(
+        resolved.x,
+        resolved.z,
+        playerLiveTransform.x,
+        playerLiveTransform.z
+      )
+
+      if (resolved.collided && bumpCooldownRef.current <= 0) {
+        bumpCooldownRef.current = 0.42
+        coastalAudio.playPop(190, 0.04)
+      }
+
       playerLiveTransform.x = cx
       playerLiveTransform.z = cz
       playerLiveTransform.y = THREE.MathUtils.lerp(
@@ -222,12 +263,31 @@ export function PlayablePlayerController({
       while (diff > Math.PI) diff -= Math.PI * 2
       while (diff < -Math.PI) diff += Math.PI * 2
       playerLiveTransform.rotationY += diff * Math.min(1, dt * 12)
+
+      persistTimerRef.current += dt
+      if (persistTimerRef.current >= 1.2) {
+        persistTimerRef.current = 0
+        persistPlayerIslandPosition(
+          playerLiveTransform.x,
+          playerLiveTransform.y,
+          playerLiveTransform.z,
+          playerLiveTransform.rotationY
+        )
+      }
     }
 
     playerLiveTransform.isMoving = isMovingNow
     if (isMovingNow !== movingRef.current) {
       movingRef.current = isMovingNow
       setMovingVisual(isMovingNow)
+      if (!isMovingNow) {
+        persistPlayerIslandPosition(
+          playerLiveTransform.x,
+          playerLiveTransform.y,
+          playerLiveTransform.z,
+          playerLiveTransform.rotationY
+        )
+      }
       onPresenceStep(
         [playerLiveTransform.x, playerLiveTransform.y, playerLiveTransform.z],
         playerLiveTransform.rotationY,
@@ -297,7 +357,7 @@ export function PlayablePlayerController({
           closest = {
             kind: 'studio',
             id: loc.zoneId,
-            label: `Entrar · ${owner?.studioTheme.studioName || meta.shortName}`,
+            label: `Entrar · ${loc.zoneId === 'b2b-lab' ? meta.name : owner?.studioTheme.studioName || meta.shortName}`,
             sublabel: residentLabel,
             accentColor: loc.badgeColor,
             zone: loc.zoneId,

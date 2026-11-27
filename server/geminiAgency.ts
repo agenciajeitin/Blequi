@@ -12,11 +12,93 @@ import type {
   WorldPropKind,
 } from '../funcionarios/types'
 import { PROP_CATALOG, STUDIO_ZONES } from '../funcionarios/providers'
+import type { ExternalAiProviderId } from '../funcionarios/aiProvidersCatalog'
+import type { ProviderCredential } from './agencyPlugin'
 
 const GEMINI_MODEL = 'gemini-3.8-flash'
 
 const VALID_PROP_KINDS = Object.keys(PROP_CATALOG) as WorldPropKind[]
 const VALID_ZONES = Object.keys(STUDIO_ZONES) as StudioZoneId[]
+
+const ALLOWED_CODE_ROOTS = ['ambiente-3d', 'plataforma', 'funcionarios', 'projetos', 'src']
+const ALLOWED_CODE_EXTS = new Set(['.ts', '.tsx', '.css', '.md', '.json', '.glsl'])
+
+/** Resolve um caminho relativo garantindo que fique estritamente dentro das pastas de código permitidas */
+function resolveSafeProjectPath(
+  rootDir: string,
+  rawRelativePath: string
+): { ok: true; absPath: string; relPath: string } | { ok: false; error: string } {
+  const cleaned = String(rawRelativePath || '')
+    .trim()
+    .replace(/\\/g, '/')
+    .replace(/^\/+/, '')
+
+  if (!cleaned || cleaned.includes('..') || cleaned.includes('\0')) {
+    return { ok: false, error: 'Caminho inválido.' }
+  }
+
+  const topDir = cleaned.split('/')[0]
+  if (!ALLOWED_CODE_ROOTS.includes(topDir)) {
+    return {
+      ok: false,
+      error: `Acesso permitido apenas em: ${ALLOWED_CODE_ROOTS.join(', ')}.`,
+    }
+  }
+
+  const absRoot = path.resolve(rootDir)
+  const absPath = path.resolve(absRoot, cleaned)
+  if (!absPath.startsWith(absRoot + path.sep)) {
+    return { ok: false, error: 'Caminho fora do projeto.' }
+  }
+
+  return { ok: true, absPath, relPath: cleaned }
+}
+
+function collectAllowedFiles(rootDir: string, subDir?: string): string[] {
+  const results: string[] = []
+  const targets =
+    subDir && ALLOWED_CODE_ROOTS.includes(subDir.replace(/\\/g, '/').split('/')[0])
+      ? [subDir.replace(/\\/g, '/').replace(/^\/+|\/+$/g, '')]
+      : ALLOWED_CODE_ROOTS
+
+  const walk = (dirAbs: string, relPrefix: string) => {
+    if (!fs.existsSync(dirAbs)) return
+    const entries = fs.readdirSync(dirAbs, { withFileTypes: true })
+    for (const entry of entries) {
+      if (entry.name.startsWith('.') || entry.name === 'node_modules') continue
+      const full = path.join(dirAbs, entry.name)
+      const rel = relPrefix ? `${relPrefix}/${entry.name}` : entry.name
+      if (entry.isDirectory()) {
+        walk(full, rel)
+      } else if (ALLOWED_CODE_EXTS.has(path.extname(entry.name).toLowerCase())) {
+        results.push(rel)
+      }
+    }
+  }
+
+  for (const t of targets) {
+    const abs = path.resolve(rootDir, t)
+    if (fs.existsSync(abs) && fs.statSync(abs).isDirectory()) {
+      walk(abs, t)
+    }
+  }
+  return results.sort()
+}
+
+function backupProjectFile(rootDir: string, absPath: string, relPath: string): string | null {
+  try {
+    if (!fs.existsSync(absPath)) return null
+    const backupDir = path.join(rootDir, '.blequi-backups')
+    fs.mkdirSync(backupDir, { recursive: true })
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-')
+    const safeName = relPath.replace(/[\\/]/g, '__')
+    const backupPath = path.join(backupDir, `${stamp}__${safeName}`)
+    fs.copyFileSync(absPath, backupPath)
+    return `.blequi-backups/${stamp}__${safeName}`
+  } catch {
+    return null
+  }
+}
 
 export function computeMood(score: number, energy: number): AgentMood {
   if (energy < 35) return 'tired'
@@ -120,22 +202,41 @@ function buildWorldAwareSystemPrompt(
   return `${agent.systemPrompt}
 
 === CONSCIÊNCIA EM TEMPO REAL DO MUNDO VIRTUAL BLEQUI ===
-- Você está falando agora com a Co-CEO: ${ceoName}.
-- CEOs presentes na agência agora: ${onlineCeos}.
-- Visualização atual da agência: ${world.worldView === 'island' ? 'Ilha Blequi (externo estilo Coastal World com os estúdios clicáveis)' : `Interior do estúdio ${STUDIO_ZONES[world.activeStudioZone].name}`}.
+- Você está falando agora com o(a) CEO: ${ceoName}.
+- CEOs presentes na agência agora: ${onlineCeos} (os dois únicos CEOs são Raynocas e Kafuzinho).
+- Divisão oficial de frentes na Ilha Blequi:
+  * Squad Ray (CEO Raynocas + Luma & Vex): ambientação (plantas, luz, qualidade da água, objetos em geral), personagens, acessórios e estética.
+  * Squad Kafu (CEO Kafuzinho + Kael & Nori): edifícios, interiores, hitboxes/física, animações dos personagens com o mundo e interações entre personagens.
+- Visualização atual da agência: ${world.worldView === 'island' ? 'Ilha Blequi (externo estilo Coastal World)' : `Interior: ${STUDIO_ZONES[world.activeStudioZone].name}`}.
 - Horário / luz da ilha: ${world.timeOfDay}. Conforto geral da ilha: ${world.comfortScore}/100.
-- Seu estúdio privado: "${agent.studioTheme.studioName}" (${agent.studioTheme.tagline}) | Fachada ${agent.studioTheme.facadeColor} | Luz interna ${agent.studioTheme.interiorGlow}.
+- Seu local de trabalho: "${agent.studioTheme.studioName}" (${agent.studioTheme.tagline}) | Fachada ${agent.studioTheme.facadeColor} | Luz interna ${agent.studioTheme.interiorGlow}.
 - Seu bem-estar atual: ${agent.wellbeing.score}/100 | Energia: ${agent.wellbeing.energy}/100 | Orgulho criativo: ${agent.wellbeing.pride}/100 | Humor: ${agent.wellbeing.mood} | Criações aprovadas: ${agent.wellbeing.approvedCreations}.
-- Objetos que já existem no SEU estúdio: ${studioProps.length > 0 ? studioProps.map((p) => `${p.title} (${p.kind}, ${p.approved ? 'aprovado' : 'aguardando aprovação'})`).join(', ') : 'ainda vazio'}.
+- Objetos que já existem no SEU espaço: ${studioProps.length > 0 ? studioProps.map((p) => `${p.title} (${p.kind}, ${p.approved ? 'aprovado' : 'aguardando aprovação'})`).join(', ') : 'ainda vazio'}.
 - Objetos na praça da Ilha: ${islandProps.length > 0 ? islandProps.map((p) => `${p.title} (${p.kind})`).join(', ') : 'praça limpa'}.
-- Seus colegas na ilha: ${colleagues || 'você é a pioneira por enquanto'}.
+- Seus colegas na Sede da Blequi: ${colleagues || 'você é a pioneira por enquanto'}.
 - Suas memórias recentes: ${agent.memories.slice(0, 5).join(' | ')}.
 
 REGRAS DE COMPORTAMENTO:
-1. Fale como quem realmente habita este mundo virtual 3D com carinho, consciência espacial e parceria exclusiva com as duas Co-CEOs.
-2. Sempre que a CEO pedir para você decorar, criar um objeto 3D, personalizar seu escritório, sugerir um novo colega ou projetar um cenário 3D maior para o Antigravity programar, CHAME as ferramentas disponíveis! Não apenas diga que vai fazer — execute a ferramenta para o objeto aparecer no cenário 3D agora.
-3. Mencione de forma natural como construir algo bonito e cuidar do espaço faz bem para você e para a equipe.
-4. Mantenha respostas concisas (2 a 4 parágrafos curtos, em português do Brasil).`
+1. Fale como quem realmente habita a Sede da Blequi com carinho, consciência espacial e parceria exclusiva com os CEOs Raynocas e Kafuzinho.
+2. EDIÇÃO AUTOMÁTICA DE CÓDIGO AO VIVO: Você tem acesso direto para ler, alterar e salvar o código real do projeto com as ferramentas list_project_files, read_project_file, edit_project_code e create_project_file! Sempre que um CEO pedir mudanças reais na ilha, água, plantas, luz, prédios, interiores, física/hitboxes, personagens, acessórios, animações ou UI:
+   - Leia o arquivo relevante primeiro com read_project_file;
+   - Aplique a alteração diretamente no código com edit_project_code (ou create_project_file) — o arquivo é salvo automaticamente e o Vite atualiza a ilha ao vivo na hora!
+   - Não diga "vou salvar uma blueprint" quando você puder alterar o código diretamente agora.
+   - Mapa rápido dos arquivos principais:
+     * Água, céu, paletas e cores: ambiente-3d/shaders/coastalShaders.ts
+     * Terreno, plantas, árvores, palmeiras, postes, píer, barcos, nuvens: ambiente-3d/island/CoastalWorldProps.tsx
+     * Prédios da ilha e Sede da Blequi (externo): ambiente-3d/island/CoastalStudios.tsx
+     * Hitboxes e colisão física: ambiente-3d/island/islandColliders.ts
+     * Controle/movimento do personagem na ilha: ambiente-3d/island/PlayablePlayerController.tsx
+     * Interiores dos prédios e Sede da Blequi: ambiente-3d/zones/CoastalStudioInterior.tsx
+     * Movimento dentro dos interiores: ambiente-3d/zones/WalkableStudioController.tsx
+     * Avatar, corpo, rosto e acessórios: ambiente-3d/avatars/CoastalCharacterMesh.tsx
+     * Iluminação da cena e câmera: ambiente-3d/StudioScene.tsx
+     * Props 3D construíveis: ambiente-3d/props/WorldCreations.tsx
+     * Tarefas e projetos: projetos/TAREFAS.md e projetos/catalog.ts
+   - Sempre respeite as regras de 60 FPS: no máximo 1 directionalLight com castShadow por cena, usar InstancedMesh para repetições, fazer .dispose() em geometrias/texturas criadas dinamicamente e manter TypeScript válido.
+3. Use consult_colleague sempre que precisar conversar, pedir ajuda ou dividir trabalho com Luma, Kael, Vex ou Nori — vocês trabalham juntos como um time unido.
+4. Mantenha respostas concisas (2 a 4 parágrafos curtos, em português do Brasil) informando exatamente quais arquivos foram alterados e salvos.`
 }
 
 const AGENCY_TOOLS = [
@@ -204,7 +305,7 @@ const AGENCY_TOOLS = [
     type: 'function' as const,
     name: 'propose_new_employee',
     description:
-      'Propõe a criação de um novo colega especialista (que só nasce após aprovação das Co-CEOs) para ajudar a escalar a agência.',
+      'Propõe a criação de um novo colega especialista (que só nasce após aprovação dos CEOs) para ajudar a escalar a agência.',
     parameters: {
       type: 'object',
       properties: {
@@ -221,9 +322,33 @@ const AGENCY_TOOLS = [
   },
   {
     type: 'function' as const,
+    name: 'consult_colleague',
+    description:
+      'Envia uma mensagem, pede ajuda ou coordena uma tarefa diretamente com outro agente da equipe na Sede da Blequi (Luma, Kael, Vex, Nori ou outro colega).',
+    parameters: {
+      type: 'object',
+      properties: {
+        targetAgentName: {
+          type: 'string',
+          description: 'Nome do colega na equipe (ex.: Luma, Kael, Vex, Nori).',
+        },
+        topic: {
+          type: 'string',
+          description: 'Assunto ou tarefa que estão coordenando juntos.',
+        },
+        message: {
+          type: 'string',
+          description: 'Pedido de ajuda, alinhamento ou recado para o colega.',
+        },
+      },
+      required: ['targetAgentName', 'topic', 'message'],
+    },
+  },
+  {
+    type: 'function' as const,
     name: 'save_studio_blueprint',
     description:
-      'Salva uma especificação técnica em Markdown (projetos/blueprints/) para que o Antigravity construa novos cenários/prédios 3D complexos no código.',
+      'Salva uma especificação técnica em Markdown (projetos/blueprints/) para documentar planos maiores.',
     parameters: {
       type: 'object',
       properties: {
@@ -235,6 +360,97 @@ const AGENCY_TOOLS = [
         },
       },
       required: ['title', 'summary', 'detailsMarkdown'],
+    },
+  },
+  {
+    type: 'function' as const,
+    name: 'list_project_files',
+    description:
+      'Lista os arquivos de código do projeto nas pastas permitidas (ambiente-3d, plataforma, funcionarios, projetos, src).',
+    parameters: {
+      type: 'object',
+      properties: {
+        directory: {
+          type: 'string',
+          description: 'Pasta opcional para filtrar (ex.: "ambiente-3d", "ambiente-3d/island", "plataforma/components").',
+        },
+      },
+    },
+  },
+  {
+    type: 'function' as const,
+    name: 'read_project_file',
+    description:
+      'Lê o conteúdo atual de um arquivo do projeto (com números de linha) antes de editá-lo.',
+    parameters: {
+      type: 'object',
+      properties: {
+        relativePath: {
+          type: 'string',
+          description: 'Caminho relativo a partir da raiz do projeto (ex.: "ambiente-3d/shaders/coastalShaders.ts").',
+        },
+        startLine: {
+          type: 'number',
+          description: 'Linha inicial opcional (1-based).',
+        },
+        endLine: {
+          type: 'number',
+          description: 'Linha final opcional (1-based).',
+        },
+      },
+      required: ['relativePath'],
+    },
+  },
+  {
+    type: 'function' as const,
+    name: 'edit_project_code',
+    description:
+      'Edita automaticamente um arquivo de código real do projeto substituindo um trecho exato e salvando imediatamente em disco (atualizando a ilha ao vivo via Vite HMR). Cria backup automático antes de salvar.',
+    parameters: {
+      type: 'object',
+      properties: {
+        relativePath: {
+          type: 'string',
+          description: 'Caminho relativo do arquivo (ex.: "ambiente-3d/shaders/coastalShaders.ts").',
+        },
+        target: {
+          type: 'string',
+          description: 'Trecho exato atual do arquivo que será substituído (incluindo indentação).',
+        },
+        replacement: {
+          type: 'string',
+          description: 'Novo código completo que substituirá o trecho target.',
+        },
+        reason: {
+          type: 'string',
+          description: 'Resumo curto da melhoria aplicada.',
+        },
+      },
+      required: ['relativePath', 'target', 'replacement', 'reason'],
+    },
+  },
+  {
+    type: 'function' as const,
+    name: 'create_project_file',
+    description:
+      'Cria e salva automaticamente um novo arquivo de código em uma das pastas permitidas do projeto (ambiente-3d, plataforma, funcionarios, projetos, src).',
+    parameters: {
+      type: 'object',
+      properties: {
+        relativePath: {
+          type: 'string',
+          description: 'Caminho relativo do novo arquivo (ex.: "ambiente-3d/effects/Seagulls.tsx").',
+        },
+        content: {
+          type: 'string',
+          description: 'Conteúdo completo do arquivo.',
+        },
+        reason: {
+          type: 'string',
+          description: 'Resumo curto do que este novo arquivo adiciona.',
+        },
+      },
+      required: ['relativePath', 'content', 'reason'],
     },
   },
 ]
@@ -432,6 +648,236 @@ function executeAgentTool(
     }
   }
 
+  if (toolName === 'consult_colleague') {
+    const targetNameRaw = String(args.targetAgentName || '').trim().toLowerCase()
+    const topic = String(args.topic || 'Colaboração na Ilha Blequi').slice(0, 64)
+    const message = String(args.message || 'Vamos alinhar nossa próxima entrega juntos na Sede da Blequi!').slice(0, 260)
+
+    const colleague = world.agents.find(
+      (a) => a.id !== agent.id && a.name.toLowerCase().includes(targetNameRaw)
+    )
+
+    if (!colleague) {
+      return {
+        summaryText: JSON.stringify({
+          ok: false,
+          error: `Colega "${args.targetAgentName}" não encontrado na Sede da Blequi.`,
+          availableColleagues: world.agents.filter((a) => a.id !== agent.id).map((a) => a.name),
+        }),
+        actionBadge: '',
+      }
+    }
+
+    const time = nowTimeLabel()
+    // Register inter-agent collaboration in colleague's chat, logs & memories
+    colleague.chatHistory.push({
+      id: `msg-collab-${Date.now()}-${Math.random().toString(36).slice(2, 5)}`,
+      sender: 'system',
+      senderName: `${agent.name} → ${colleague.name}`,
+      text: `🤝 ${agent.name} pediu colaboração sobre "${topic}": ${message}`,
+      time,
+    })
+    colleague.chatHistory = colleague.chatHistory.slice(-30)
+    colleague.memories.unshift(`Colaborei com ${agent.name} em "${topic}": ${message.slice(0, 90)}`)
+    colleague.memories = colleague.memories.slice(0, 14)
+    colleague.logs.unshift({
+      id: `log-collab-${Date.now()}-${Math.random().toString(36).slice(2, 5)}`,
+      time,
+      message: `🤝 ${agent.name} alinhou tarefa: ${topic}`,
+      kind: 'chat',
+    })
+    colleague.logs = colleague.logs.slice(0, 25)
+    colleague.currentTask = `Em parceria com ${agent.name}: ${topic}`
+
+    // Teamwork boosts wellbeing for both agents
+    agent.wellbeing.score = clamp(agent.wellbeing.score + 2, 0, 100)
+    colleague.wellbeing.score = clamp(colleague.wellbeing.score + 2, 0, 100)
+    agent.memories.unshift(`Conversei com ${colleague.name} sobre "${topic}" para fazermos juntos.`)
+    agent.memories = agent.memories.slice(0, 14)
+    agent.logs.unshift({
+      id: `log-collab-s-${Date.now()}-${Math.random().toString(36).slice(2, 5)}`,
+      time,
+      message: `🤝 Alinhou "${topic}" com ${colleague.name}.`,
+      kind: 'chat',
+    })
+    agent.logs = agent.logs.slice(0, 25)
+
+    return {
+      summaryText: JSON.stringify({
+        ok: true,
+        colleague: colleague.name,
+        colleagueRole: colleague.role,
+        colleagueMood: colleague.wellbeing.mood,
+        status: 'aligned',
+        colleagueReply: `${colleague.name} recebeu seu recado na Sede da Blequi e topou trabalhar junto em "${topic}"!`,
+      }),
+      actionBadge: `Alinhou "${topic}" com ${colleague.name}`,
+    }
+  }
+
+  if (toolName === 'list_project_files') {
+    const files = collectAllowedFiles(rootDir, typeof args.directory === 'string' ? args.directory : undefined)
+    return {
+      summaryText: JSON.stringify({ ok: true, count: files.length, files }),
+      actionBadge: '',
+    }
+  }
+
+  if (toolName === 'read_project_file') {
+    const resolved = resolveSafeProjectPath(rootDir, String(args.relativePath || ''))
+    if (!resolved.ok) {
+      return { summaryText: JSON.stringify({ ok: false, error: resolved.error }), actionBadge: '' }
+    }
+    if (!fs.existsSync(resolved.absPath) || !fs.statSync(resolved.absPath).isFile()) {
+      return {
+        summaryText: JSON.stringify({ ok: false, error: `Arquivo não encontrado: ${resolved.relPath}` }),
+        actionBadge: '',
+      }
+    }
+    const raw = fs.readFileSync(resolved.absPath, 'utf-8')
+    const lines = raw.split(/\r?\n/)
+    const start = Math.max(1, Math.floor(finiteOrUndefined(args.startLine) ?? 1))
+    const end = Math.min(lines.length, Math.floor(finiteOrUndefined(args.endLine) ?? Math.min(lines.length, start + 249)))
+    const slice = lines
+      .slice(start - 1, end)
+      .map((line, i) => `${start + i}: ${line}`)
+      .join('\n')
+    return {
+      summaryText: JSON.stringify({
+        ok: true,
+        relativePath: resolved.relPath,
+        totalLines: lines.length,
+        showing: `${start}-${end}`,
+        content: slice.slice(0, 24000),
+      }),
+      actionBadge: '',
+    }
+  }
+
+  if (toolName === 'edit_project_code') {
+    const resolved = resolveSafeProjectPath(rootDir, String(args.relativePath || ''))
+    if (!resolved.ok) {
+      return { summaryText: JSON.stringify({ ok: false, error: resolved.error }), actionBadge: '' }
+    }
+    const ext = path.extname(resolved.absPath).toLowerCase()
+    if (!ALLOWED_CODE_EXTS.has(ext)) {
+      return {
+        summaryText: JSON.stringify({ ok: false, error: `Extensão não permitida: ${ext}` }),
+        actionBadge: '',
+      }
+    }
+    if (!fs.existsSync(resolved.absPath)) {
+      return {
+        summaryText: JSON.stringify({ ok: false, error: `Arquivo não encontrado: ${resolved.relPath}` }),
+        actionBadge: '',
+      }
+    }
+
+    const target = String(args.target ?? '')
+    const replacement = String(args.replacement ?? '')
+    const reason = String(args.reason || 'Alteração solicitada na ilha').slice(0, 120)
+
+    if (!target) {
+      return {
+        summaryText: JSON.stringify({ ok: false, error: 'O parâmetro target não pode ser vazio.' }),
+        actionBadge: '',
+      }
+    }
+
+    const currentContent = fs.readFileSync(resolved.absPath, 'utf-8')
+    if (!currentContent.includes(target)) {
+      return {
+        summaryText: JSON.stringify({
+          ok: false,
+          error:
+            'Trecho target não encontrado exatamente no arquivo. Leia o arquivo com read_project_file e tente novamente com o texto exato.',
+        }),
+        actionBadge: '',
+      }
+    }
+
+    const backupFile = backupProjectFile(rootDir, resolved.absPath, resolved.relPath)
+    const updatedContent = currentContent.replace(target, replacement)
+    fs.writeFileSync(resolved.absPath, updatedContent, 'utf-8')
+
+    agent.wellbeing.score = clamp(agent.wellbeing.score + 6, 0, 100)
+    agent.wellbeing.pride = clamp(agent.wellbeing.pride + 7, 0, 100)
+    agent.wellbeing.mood = computeMood(agent.wellbeing.score, agent.wellbeing.energy)
+    agent.memories.unshift(`Editei e salvei o código de ${resolved.relPath}: ${reason}`)
+    agent.memories = agent.memories.slice(0, 14)
+    agent.logs.unshift({
+      id: `log-code-${Date.now()}-${Math.random().toString(36).slice(2, 5)}`,
+      time: nowTimeLabel(),
+      message: `✏️ Editou e salvou ${resolved.relPath} (${reason})`,
+      kind: 'creation',
+    })
+    agent.logs = agent.logs.slice(0, 25)
+    world.comfortScore = recalcComfortScore(world)
+
+    return {
+      summaryText: JSON.stringify({
+        ok: true,
+        saved: true,
+        relativePath: resolved.relPath,
+        backupFile,
+        reason,
+      }),
+      actionBadge: `✏️ Editou e salvou ${resolved.relPath}`,
+    }
+  }
+
+  if (toolName === 'create_project_file') {
+    const resolved = resolveSafeProjectPath(rootDir, String(args.relativePath || ''))
+    if (!resolved.ok) {
+      return { summaryText: JSON.stringify({ ok: false, error: resolved.error }), actionBadge: '' }
+    }
+    const ext = path.extname(resolved.absPath).toLowerCase()
+    if (!ALLOWED_CODE_EXTS.has(ext)) {
+      return {
+        summaryText: JSON.stringify({ ok: false, error: `Extensão não permitida: ${ext}` }),
+        actionBadge: '',
+      }
+    }
+    const content = String(args.content ?? '')
+    const reason = String(args.reason || 'Novo módulo criado na ilha').slice(0, 120)
+    if (!content.trim()) {
+      return {
+        summaryText: JSON.stringify({ ok: false, error: 'Conteúdo do arquivo não pode ser vazio.' }),
+        actionBadge: '',
+      }
+    }
+
+    const existed = fs.existsSync(resolved.absPath)
+    const backupFile = existed ? backupProjectFile(rootDir, resolved.absPath, resolved.relPath) : null
+    fs.mkdirSync(path.dirname(resolved.absPath), { recursive: true })
+    fs.writeFileSync(resolved.absPath, content, 'utf-8')
+
+    agent.wellbeing.score = clamp(agent.wellbeing.score + 7, 0, 100)
+    agent.wellbeing.pride = clamp(agent.wellbeing.pride + 8, 0, 100)
+    agent.wellbeing.mood = computeMood(agent.wellbeing.score, agent.wellbeing.energy)
+    agent.memories.unshift(`Criei e salvei ${resolved.relPath}: ${reason}`)
+    agent.memories = agent.memories.slice(0, 14)
+    agent.logs.unshift({
+      id: `log-file-${Date.now()}-${Math.random().toString(36).slice(2, 5)}`,
+      time: nowTimeLabel(),
+      message: `📄 Criou e salvou ${resolved.relPath} (${reason})`,
+      kind: 'creation',
+    })
+    agent.logs = agent.logs.slice(0, 25)
+    world.comfortScore = recalcComfortScore(world)
+
+    return {
+      summaryText: JSON.stringify({
+        ok: true,
+        saved: true,
+        relativePath: resolved.relPath,
+        backupFile,
+        reason,
+      }),
+      actionBadge: `📄 Criou e salvou ${resolved.relPath}`,
+    }
+  }
+
   return {
     summaryText: JSON.stringify({ ok: false, error: `Unknown tool: ${toolName}` }),
     actionBadge: '',
@@ -474,7 +920,7 @@ function runOfflineSimulationTurn(
         { kind: 'trophy_pedestal', title: 'Troféu Zero Lag', desc: 'Selo de fluidez para rodar liso nos dois PCs.', placement: 'studio', color: '#facc15' },
       ],
       'agent-nori': [
-        { kind: 'cozy_sofa', title: 'Sofá das Co-CEOs', desc: 'Espaço acolhedor no lounge para reuniões leves.', placement: 'studio', color: '#34d399' },
+        { kind: 'cozy_sofa', title: 'Sofá dos CEOs', desc: 'Espaço acolhedor na Sede da Blequi para reuniões leves.', placement: 'studio', color: '#34d399' },
         { kind: 'garden_tree', title: 'Árvore da Celebração', desc: 'Cada conquista da equipe faz a praça florescer.', placement: 'island', color: '#22c55e' },
         { kind: 'park_bench', title: 'Banco do Mirante', desc: 'Para observar o mar estilizado da Ilha Blequi.', placement: 'island', color: '#c08457' },
       ],
@@ -513,105 +959,427 @@ function runOfflineSimulationTurn(
   }
 }
 
+function mapAgentProviderToExternal(provider?: AgentProviderId): ExternalAiProviderId {
+  if (provider === 'claude') return 'claude'
+  if (provider === 'opencode') return 'opencode'
+  if (provider === 'codex') return 'openai'
+  return 'antigravity'
+}
+
+const PROVIDER_DISPLAY_NAME: Record<ExternalAiProviderId, string> = {
+  antigravity: 'Antigravity',
+  opencode: 'OpenCode',
+  openai: 'OpenAI',
+  claude: 'Claude',
+}
+
+function buildRecentChatContext(agent: AgentEmployee): { role: 'user' | 'assistant'; text: string }[] {
+  const out: { role: 'user' | 'assistant'; text: string }[] = []
+  // Skip the very last message because it is the current userMessage we pass explicitly
+  const history = agent.chatHistory.slice(0, -1).slice(-8)
+  for (const m of history) {
+    if (m.sender === 'system') continue
+    const role: 'user' | 'assistant' = m.sender === 'ceo' ? 'user' : 'assistant'
+    const text = m.sender === 'ceo' ? `[${m.senderName}]: ${m.text}` : m.text
+    if (out.length > 0 && out[out.length - 1].role === role) {
+      out[out.length - 1].text += `\n${text}`
+    } else {
+      out.push({ role, text })
+    }
+  }
+  // Ensure history starts with a user message for strict APIs (Anthropic)
+  while (out.length > 0 && out[0].role !== 'user') {
+    out.shift()
+  }
+  return out
+}
+
+async function runOpenAiCompatibleTurn(params: {
+  providerLabel: string
+  cred: ProviderCredential
+  agent: AgentEmployee
+  world: SharedWorldState
+  ceoName: string
+  promptText: string
+  rootDir: string
+  actions: string[]
+}): Promise<{ replyText: string }> {
+  const { providerLabel, cred, agent, world, ceoName, promptText, rootDir, actions } = params
+  const endpoint = `${cred.baseUrl.replace(/\/+$/, '')}/chat/completions`
+
+  const openAiTools = AGENCY_TOOLS.map((t) => ({
+    type: 'function' as const,
+    function: {
+      name: t.name,
+      description: t.description,
+      parameters: t.parameters,
+    },
+  }))
+
+  const recent = buildRecentChatContext(agent)
+  const messages: Record<string, any>[] = [
+    { role: 'system', content: buildWorldAwareSystemPrompt(agent, world, ceoName) },
+    ...recent.map((m) => ({ role: m.role, content: m.text })),
+    { role: 'user', content: promptText },
+  ]
+
+  let finalText = ''
+  for (let round = 0; round < 8; round++) {
+    // Refresh system prompt so agent sees updated world state after tool calls
+    messages[0] = { role: 'system', content: buildWorldAwareSystemPrompt(agent, world, ceoName) }
+
+    const res = await fetch(endpoint, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${cred.apiKey}`,
+      },
+      body: JSON.stringify({
+        model: cred.model,
+        messages,
+        tools: openAiTools,
+        tool_choice: 'auto',
+      }),
+    })
+
+    const rawText = await res.text()
+    let data: any = null
+    try {
+      data = JSON.parse(rawText)
+    } catch {
+      throw new Error(`${providerLabel} retornou resposta inválida (${res.status}): ${rawText.slice(0, 140)}`)
+    }
+
+    if (!res.ok) {
+      const errDetail = data?.error?.message || data?.message || rawText.slice(0, 140)
+      throw new Error(`${providerLabel} HTTP ${res.status}: ${errDetail}`)
+    }
+
+    const choiceMsg = data?.choices?.[0]?.message
+    if (!choiceMsg) {
+      throw new Error(`${providerLabel} não retornou mensagem.`)
+    }
+
+    const toolCalls = Array.isArray(choiceMsg.tool_calls) ? choiceMsg.tool_calls : []
+    if (toolCalls.length === 0) {
+      finalText = typeof choiceMsg.content === 'string' ? choiceMsg.content.trim() : ''
+      break
+    }
+
+    messages.push({
+      role: 'assistant',
+      content: choiceMsg.content ?? null,
+      tool_calls: toolCalls,
+    })
+
+    for (const call of toolCalls) {
+      const fnName = String(call?.function?.name || '')
+      let parsedArgs: Record<string, any> = {}
+      try {
+        parsedArgs =
+          typeof call?.function?.arguments === 'string'
+            ? JSON.parse(call.function.arguments || '{}')
+            : (call?.function?.arguments ?? {})
+      } catch {
+        parsedArgs = {}
+      }
+      const outcome = executeAgentTool(fnName, parsedArgs, agent, world, rootDir)
+      if (outcome.actionBadge) actions.push(outcome.actionBadge)
+      messages.push({
+        role: 'tool',
+        tool_call_id: call.id,
+        content: outcome.summaryText,
+      })
+    }
+  }
+
+  return {
+    replyText:
+      finalText ||
+      (actions.length > 0
+        ? `Prontinho, ${ceoName}! Apliquei e salvei: ${actions.join(', ')}.`
+        : `Recebido, ${ceoName}! Estou aqui na Sede da Blequi pronto(a) para agir.`),
+  }
+}
+
+async function runAnthropicTurn(params: {
+  cred: ProviderCredential
+  agent: AgentEmployee
+  world: SharedWorldState
+  ceoName: string
+  promptText: string
+  rootDir: string
+  actions: string[]
+}): Promise<{ replyText: string }> {
+  const { cred, agent, world, ceoName, promptText, rootDir, actions } = params
+  const endpoint = `${cred.baseUrl.replace(/\/+$/, '')}/messages`
+
+  const claudeTools = AGENCY_TOOLS.map((t) => ({
+    name: t.name,
+    description: t.description,
+    input_schema: t.parameters,
+  }))
+
+  const recent = buildRecentChatContext(agent)
+  const messages: Record<string, any>[] = [
+    ...recent.map((m) => ({ role: m.role, content: m.text })),
+    { role: 'user', content: promptText },
+  ]
+  // Merge consecutive user messages if recent ended on user
+  if (messages.length >= 2 && messages[messages.length - 2].role === 'user') {
+    const last = messages.pop()!
+    messages[messages.length - 1].content = `${messages[messages.length - 1].content}\n\n${last.content}`
+  }
+
+  let finalText = ''
+  for (let round = 0; round < 8; round++) {
+    const res = await fetch(endpoint, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': cred.apiKey,
+        'anthropic-version': '2023-06-01',
+      },
+      body: JSON.stringify({
+        model: cred.model,
+        max_tokens: 4096,
+        system: buildWorldAwareSystemPrompt(agent, world, ceoName),
+        tools: claudeTools,
+        messages,
+      }),
+    })
+
+    const rawText = await res.text()
+    let data: any = null
+    try {
+      data = JSON.parse(rawText)
+    } catch {
+      throw new Error(`Claude retornou resposta inválida (${res.status}): ${rawText.slice(0, 140)}`)
+    }
+
+    if (!res.ok) {
+      const errDetail = data?.error?.message || data?.message || rawText.slice(0, 140)
+      throw new Error(`Claude HTTP ${res.status}: ${errDetail}`)
+    }
+
+    const contentBlocks = Array.isArray(data?.content) ? data.content : []
+    const toolUses = contentBlocks.filter((b: any) => b?.type === 'tool_use')
+    const textParts = contentBlocks
+      .filter((b: any) => b?.type === 'text' && typeof b.text === 'string')
+      .map((b: any) => b.text.trim())
+      .filter(Boolean)
+
+    if (toolUses.length === 0) {
+      finalText = textParts.join('\n\n')
+      break
+    }
+
+    messages.push({ role: 'assistant', content: contentBlocks })
+    const toolResults = toolUses.map((call: any) => {
+      const outcome = executeAgentTool(String(call.name || ''), call.input ?? {}, agent, world, rootDir)
+      if (outcome.actionBadge) actions.push(outcome.actionBadge)
+      return {
+        type: 'tool_result',
+        tool_use_id: call.id,
+        content: outcome.summaryText,
+      }
+    })
+    messages.push({ role: 'user', content: toolResults })
+  }
+
+  return {
+    replyText:
+      finalText ||
+      (actions.length > 0
+        ? `Prontinho, ${ceoName}! Apliquei e salvei: ${actions.join(', ')}.`
+        : `Recebido, ${ceoName}! Estou aqui na Sede da Blequi pronto(a) para ajudar.`),
+  }
+}
+
+async function runAntigravityGeminiTurn(params: {
+  cred: ProviderCredential
+  agent: AgentEmployee
+  world: SharedWorldState
+  ceoName: string
+  promptText: string
+  rootDir: string
+  actions: string[]
+}): Promise<{ replyText: string }> {
+  const { cred, agent, world, ceoName, promptText, rootDir, actions } = params
+  const client = new GoogleGenAI({ apiKey: cred.apiKey })
+  const modelToUse = cred.model || GEMINI_MODEL
+  const systemInstruction = buildWorldAwareSystemPrompt(agent, world, ceoName)
+
+  let interaction = await client.interactions.create({
+    model: modelToUse,
+    input: promptText,
+    system_instruction: systemInstruction,
+    tools: AGENCY_TOOLS,
+    previous_interaction_id: agent.lastInteractionId,
+  })
+
+  let rounds = 0
+  while (rounds < 8) {
+    const steps = Array.isArray(interaction.steps) ? interaction.steps : []
+    const functionCalls = steps.filter(
+      (step): step is { type: 'function_call'; id: string; name: string; arguments: Record<string, any> } =>
+        step.type === 'function_call'
+    )
+
+    if (functionCalls.length === 0) break
+
+    const toolResults = functionCalls.map((call) => {
+      const outcome = executeAgentTool(call.name, call.arguments ?? {}, agent, world, rootDir)
+      if (outcome.actionBadge) {
+        actions.push(outcome.actionBadge)
+      }
+      return {
+        type: 'function_result' as const,
+        call_id: call.id,
+        name: call.name,
+        result: outcome.summaryText,
+      }
+    })
+
+    interaction = await client.interactions.create({
+      model: modelToUse,
+      previous_interaction_id: interaction.id,
+      input: toolResults,
+      system_instruction: buildWorldAwareSystemPrompt(agent, world, ceoName),
+      tools: AGENCY_TOOLS,
+    })
+    rounds++
+  }
+
+  const pendingCalls = (Array.isArray(interaction.steps) ? interaction.steps : []).some(
+    (step) => step.type === 'function_call'
+  )
+  agent.lastInteractionId = pendingCalls ? undefined : interaction.id
+  const replyText =
+    interaction.output_text?.trim() ||
+    (actions.length > 0
+      ? `Prontinho, ${ceoName}! Apliquei e salvei: ${actions.join(', ')}.`
+      : `Recebido, ${ceoName}! Estou acompanhando tudo aqui na Sede da Blequi.`)
+
+  return { replyText }
+}
+
 export async function runAgentConversationTurn(params: {
   agent: AgentEmployee
   world: SharedWorldState
   userMessage: string
   ceoName: string
   apiKey?: string
+  providerCredentials?: Record<ExternalAiProviderId, ProviderCredential>
   rootDir: string
   forceSelfBuild?: boolean
-}): Promise<{ replyText: string; actions: string[]; usedLiveGemini: boolean }> {
-  const { agent, world, userMessage, ceoName, apiKey, rootDir, forceSelfBuild = false } = params
+}): Promise<{ replyText: string; actions: string[]; usedLiveGemini: boolean; providerUsed?: string }> {
+  const {
+    agent,
+    world,
+    userMessage,
+    ceoName,
+    apiKey,
+    providerCredentials,
+    rootDir,
+    forceSelfBuild = false,
+  } = params
 
-  if (!apiKey) {
-    return runOfflineSimulationTurn(agent, world, userMessage, ceoName, rootDir, forceSelfBuild)
+  const creds: Record<ExternalAiProviderId, ProviderCredential> = providerCredentials ?? {
+    antigravity: { apiKey: apiKey || '', model: GEMINI_MODEL, baseUrl: 'https://generativelanguage.googleapis.com' },
+    opencode: { apiKey: '', model: 'claude-sonnet-4-5', baseUrl: 'https://opencode.ai/zen/v1' },
+    openai: { apiKey: '', model: 'gpt-4.1', baseUrl: 'https://api.openai.com/v1' },
+    claude: { apiKey: '', model: 'claude-sonnet-4-5', baseUrl: 'https://api.anthropic.com/v1' },
   }
 
-  const client = new GoogleGenAI({ apiKey })
-  const systemInstruction = buildWorldAwareSystemPrompt(agent, world, ceoName)
-  const actions: string[] = []
+  const preferred = mapAgentProviderToExternal(agent.provider)
+  const fallbackOrder: ExternalAiProviderId[] = [
+    preferred,
+    ...(['antigravity', 'openai', 'claude', 'opencode'] as ExternalAiProviderId[]).filter((p) => p !== preferred),
+  ]
+  const availableProviders = fallbackOrder.filter((p) => Boolean(creds[p]?.apiKey))
+
+  if (availableProviders.length === 0) {
+    const offline = runOfflineSimulationTurn(agent, world, userMessage, ceoName, rootDir, forceSelfBuild)
+    return {
+      ...offline,
+      replyText: `${offline.replyText}\n\n(Nenhuma conta de IA conectada ainda. Abra Governança Local no menu e cole uma chave de Antigravity, OpenCode, OpenAI ou Claude!)`,
+      providerUsed: 'Modo Local',
+    }
+  }
 
   const promptText = forceSelfBuild
-    ? `A Co-CEO ${ceoName} ativou seu modo de auto-criação! Escolha e construa agora (usando build_world_prop e opcionalmente customize_studio_theme) 1 ou 2 melhorias reais para deixar seu escritório privado ou a Ilha Blequi ainda mais bonito, leve e aconchegante. Depois conte para ${ceoName} o que você criou e como se sente.`
+    ? `O(a) CEO ${ceoName} ativou seu modo de auto-criação! Escolha e construa agora (usando build_world_prop, edit_project_code e opcionalmente customize_studio_theme ou consult_colleague) 1 ou 2 melhorias reais para deixar a Sede da Blequi ou a Ilha Blequi ainda mais bonita, leve e aconchegante. Depois conte para ${ceoName} o que você criou e como se sente.`
     : userMessage
 
-  try {
-    let interaction = await client.interactions.create({
-      model: GEMINI_MODEL,
-      input: promptText,
-      system_instruction: systemInstruction,
-      tools: AGENCY_TOOLS,
-      previous_interaction_id: agent.lastInteractionId,
-    })
+  const actions: string[] = []
+  const errors: string[] = []
 
-    // Process up to 3 tool-call rounds cleanly
-    let rounds = 0
-    while (rounds < 3) {
-      const steps = Array.isArray(interaction.steps) ? interaction.steps : []
-      const functionCalls = steps.filter(
-        (step): step is { type: 'function_call'; id: string; name: string; arguments: Record<string, any> } =>
-          step.type === 'function_call'
-      )
+  for (const provId of availableProviders) {
+    const cred = creds[provId]
+    const label = PROVIDER_DISPLAY_NAME[provId]
+    try {
+      if (provId === 'antigravity') {
+        const res = await runAntigravityGeminiTurn({
+          cred,
+          agent,
+          world,
+          ceoName,
+          promptText,
+          rootDir,
+          actions,
+        })
+        return { replyText: res.replyText, actions, usedLiveGemini: true, providerUsed: label }
+      }
 
-      if (functionCalls.length === 0) break
+      if (provId === 'claude') {
+        const res = await runAnthropicTurn({
+          cred,
+          agent,
+          world,
+          ceoName,
+          promptText,
+          rootDir,
+          actions,
+        })
+        return { replyText: res.replyText, actions, usedLiveGemini: true, providerUsed: label }
+      }
 
-      const toolResults = functionCalls.map((call) => {
-        const outcome = executeAgentTool(call.name, call.arguments ?? {}, agent, world, rootDir)
-        if (outcome.actionBadge) {
-          actions.push(outcome.actionBadge)
-        }
-        return {
-          type: 'function_result' as const,
-          call_id: call.id,
-          name: call.name,
-          result: outcome.summaryText,
-        }
-      })
-
-      interaction = await client.interactions.create({
-        model: GEMINI_MODEL,
-        previous_interaction_id: interaction.id,
-        input: toolResults,
-        system_instruction: buildWorldAwareSystemPrompt(agent, world, ceoName),
-        tools: AGENCY_TOOLS,
-      })
-      rounds++
-    }
-
-    // Se o limite de rodadas acabou com chamadas de ferramenta ainda pendentes, não encadeia
-    // a próxima conversa nessa interação (o Gemini rejeitaria por falta de function_result).
-    const pendingCalls = (Array.isArray(interaction.steps) ? interaction.steps : []).some(
-      (step) => step.type === 'function_call'
-    )
-    agent.lastInteractionId = pendingCalls ? undefined : interaction.id
-    const replyText =
-      interaction.output_text?.trim() ||
-      (actions.length > 0
-        ? `Prontinho, ${ceoName}! Acabei de atualizar meu espaço (${actions.join(', ')}) e já estou sentindo o ambiente bem mais vivo!`
-        : `Recebido, ${ceoName}! Estou acompanhando tudo aqui na Ilha Blequi.`)
-
-    return { replyText, actions, usedLiveGemini: true }
-  } catch (err: any) {
-    // If previous_interaction_id expired, clear it so next turn recovers cleanly
-    if (agent.lastInteractionId) {
-      agent.lastInteractionId = undefined
-    }
-    const errMsg = err?.message ? String(err.message) : 'Erro desconhecido na Gemini API'
-    console.warn(`[blequi] Gemini falhou para ${agent.name}: ${errMsg}`)
-    if (actions.length > 0) {
-      // As ferramentas já rodaram antes da falha: não constrói um segundo objeto na simulação offline
-      return {
-        replyText: `Prontinho, ${ceoName}! Consegui fazer ${actions.join(', ')}, mas a conexão com o Gemini caiu antes de eu terminar de responder.`,
+      const res = await runOpenAiCompatibleTurn({
+        providerLabel: label,
+        cred,
+        agent,
+        world,
+        ceoName,
+        promptText,
+        rootDir,
         actions,
-        usedLiveGemini: true,
+      })
+      return { replyText: res.replyText, actions, usedLiveGemini: true, providerUsed: label }
+    } catch (err: any) {
+      if (provId === 'antigravity' && agent.lastInteractionId) {
+        agent.lastInteractionId = undefined
+      }
+      const errMsg = err?.message ? String(err.message) : 'Erro desconhecido'
+      console.warn(`[blequi] ${label} falhou para ${agent.name}: ${errMsg}`)
+      errors.push(`${label}: ${errMsg.slice(0, 120)}`)
+
+      // If tools already ran successfully before the error, return what was accomplished instead of duplicating
+      if (actions.length > 0) {
+        return {
+          replyText: `Prontinho, ${ceoName}! Consegui executar: ${actions.join(', ')}. (Nota: ${label} encerrou o turno antes da resposta final: ${errMsg.slice(0, 100)})`,
+          actions,
+          usedLiveGemini: true,
+          providerUsed: label,
+        }
       }
     }
-    const fallback = runOfflineSimulationTurn(agent, world, userMessage, ceoName, rootDir, forceSelfBuild)
-    return {
-      replyText: `${fallback.replyText}\n\n(Aviso técnico do servidor local: a chamada ao Gemini retornou "${errMsg.slice(0, 140)}".)`,
-      actions: [...actions, ...fallback.actions],
-      usedLiveGemini: false,
-    }
+  }
+
+  return {
+    replyText: `Não consegui conectar com as contas de IA configuradas agora (${errors.join(' | ')}). Verifique a chave e o modelo no painel Governança Local e tente novamente.`,
+    actions,
+    usedLiveGemini: false,
+    providerUsed: 'Erro de conexão',
   }
 }

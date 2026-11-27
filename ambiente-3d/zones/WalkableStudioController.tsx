@@ -13,6 +13,7 @@ import { studioPlayerLiveTransform } from '@plataforma/store/useAgencyStore'
 import { CoastalCharacterMesh } from '../avatars/CoastalCharacterMesh'
 import { studioAgentLivePositions } from '../avatars/StudioResidentAgent'
 import { virtualJoystick } from '../island/PlayablePlayerController'
+import { resolveStudioCollisions } from '../island/islandColliders'
 
 interface WalkableStudioControllerProps {
   zone: StudioZoneId
@@ -138,16 +139,17 @@ export function WalkableStudioController({
       const speed = 5.6 * Math.min(1, mag)
       const dirX = inputX / mag
       const dirZ = inputZ / mag
-      studioPlayerLiveTransform.x = THREE.MathUtils.clamp(
-        studioPlayerLiveTransform.x + dirX * speed * dt,
-        -bound,
-        bound
+      const nextX = THREE.MathUtils.clamp(studioPlayerLiveTransform.x + dirX * speed * dt, -bound, bound)
+      const nextZ = THREE.MathUtils.clamp(studioPlayerLiveTransform.z + dirZ * speed * dt, -bound, bound)
+      const resolved = resolveStudioCollisions(
+        nextX,
+        nextZ,
+        0.44,
+        studioAgents.map((a) => a.deskPosition),
+        studioProps
       )
-      studioPlayerLiveTransform.z = THREE.MathUtils.clamp(
-        studioPlayerLiveTransform.z + dirZ * speed * dt,
-        -bound,
-        bound
-      )
+      studioPlayerLiveTransform.x = THREE.MathUtils.clamp(resolved.x, -bound, bound)
+      studioPlayerLiveTransform.z = THREE.MathUtils.clamp(resolved.z, -bound, bound)
 
       const targetYaw = Math.atan2(dirX, dirZ)
       let diff = targetYaw - studioPlayerLiveTransform.rotationY

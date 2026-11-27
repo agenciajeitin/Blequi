@@ -62,7 +62,7 @@ function PartnerCeoWalker({ ceo, view }: { ceo: OnlineCeoPresence; view: WorldVi
 
   const appearance = ceo.avatar ?? DEFAULT_PLAYER_AVATAR
   const isMoving = Boolean(ceo.isMoving)
-  const displayName = ceo.name?.trim() || 'Co-CEO'
+  const displayName = ceo.name?.trim() || 'CEO'
 
   return (
     <group ref={rootRef} position={spawnPos} rotation={spawnRot}>
@@ -87,7 +87,7 @@ function PartnerCeoWalker({ ceo, view }: { ceo: OnlineCeoPresence; view: WorldVi
             aria-hidden="true"
           />
           <span className="text-[11px] font-extrabold text-[#3b3777]">{displayName}</span>
-          <span className="text-[10px] font-bold text-[#02c6a7]">· Co-CEO</span>
+          <span className="text-[10px] font-bold text-[#02c6a7]">· CEO</span>
         </div>
       </Html>
     </group>

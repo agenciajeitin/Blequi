@@ -147,8 +147,8 @@ export function CoastalStudios({
     const owner = agents.find((a) => a.zone === zoneId)
     const meta = STUDIO_ZONES[zoneId]
     return {
-      name: owner?.studioTheme.studioName || meta.shortName,
-      accent: owner?.studioTheme.roofAccent || meta.color,
+      name: zoneId === 'b2b-lab' ? meta.name : owner?.studioTheme.studioName || meta.shortName,
+      accent: zoneId === 'b2b-lab' ? meta.color : owner?.studioTheme.roofAccent || meta.color,
       facade: owner?.studioTheme.facadeColor || '#f7fafc',
     }
   }
