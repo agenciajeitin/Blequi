@@ -72,15 +72,45 @@ function prepareAttachments(rootDir: string, attachments: ChatAttachment[] = [])
 }
 
 /** fetch com tempo limite para nunca deixar o agente "pensando" para sempre */
-async function fetchWithTimeout(url: string, init: RequestInit): Promise<Response> {
+async function fetchWithTimeout(
+  url: string,
+  init: RequestInit,
+  timeoutMs = PROVIDER_REQUEST_TIMEOUT_MS
+): Promise<Response> {
   try {
-    return await fetch(url, { ...init, signal: AbortSignal.timeout(PROVIDER_REQUEST_TIMEOUT_MS) })
+    return await fetch(url, { ...init, signal: AbortSignal.timeout(timeoutMs) })
   } catch (err: any) {
     if (err?.name === 'TimeoutError' || err?.name === 'AbortError') {
-      throw new Error(`tempo esgotado (${Math.round(PROVIDER_REQUEST_TIMEOUT_MS / 1000)}s)`)
+      throw new Error(`tempo esgotado (${Math.round(timeoutMs / 1000)}s)`)
     }
     throw err
   }
+}
+
+/** Lista os modelos de um endpoint compatível com OpenAI (OpenCode Zen, OpenAI...) */
+export async function listOpenAiCompatibleModels(baseUrl: string, apiKey: string): Promise<string[]> {
+  try {
+    const res = await fetchWithTimeout(
+      `${baseUrl.replace(/\/+$/, '')}/models`,
+      { method: 'GET', headers: { Authorization: `Bearer ${apiKey}` } },
+      12_000
+    )
+    if (!res.ok) return []
+    const data = (await res.json()) as { data?: Array<{ id?: string }> }
+    if (!Array.isArray(data?.data)) return []
+    return data.data
+      .map((m) => (typeof m?.id === 'string' ? m.id.trim() : ''))
+      .filter((id) => Boolean(id) && !/embedding|whisper|tts|dall-e|moderation|audio/i.test(id))
+  } catch {
+    return []
+  }
+}
+
+function pickBestAvailableModel(available: string[], preferredOrder: string[]): string | null {
+  for (const pref of preferredOrder) {
+    if (available.includes(pref)) return pref
+  }
+  return available[0] ?? null
 }
 
 function withTimeout<T>(promise: Promise<T>, label: string): Promise<T> {
@@ -1160,30 +1190,59 @@ async function runOpenAiCompatibleTurn(p: ProviderTurnParams & { providerLabel: 
     { role: 'user', content: userContent },
   ]
 
+  let activeModel = cred.model
+  let triedModelDiscovery = false
   let finalText = ''
   for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
     // Refresh system prompt so agent sees updated world state after tool calls
     messages[0] = { role: 'system', content: buildWorldAwareSystemPrompt(agent, world, ceoName, group) }
 
-    const res = await fetchWithTimeout(endpoint, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${cred.apiKey}`,
-      },
-      body: JSON.stringify({
-        model: cred.model,
-        messages,
-        tools: openAiTools,
-        tool_choice: 'auto',
-      }),
-    })
+    const callOnce = async (modelId: string) => {
+      const res = await fetchWithTimeout(endpoint, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${cred.apiKey}`,
+        },
+        body: JSON.stringify({
+          model: modelId,
+          messages,
+          tools: openAiTools,
+          tool_choice: 'auto',
+        }),
+      })
+      const rawText = await res.text()
+      let data: any = null
+      try {
+        data = JSON.parse(rawText)
+      } catch {
+        data = null
+      }
+      return { res, data, rawText }
+    }
 
-    const rawText = await res.text()
-    let data: any = null
-    try {
-      data = JSON.parse(rawText)
-    } catch {
+    let { res, data, rawText } = await callOnce(activeModel)
+
+    // Descobre um modelo que funcione se o salvo não existir neste endpoint (ex.: OpenCode Zen)
+    if (
+      !res.ok &&
+      !triedModelDiscovery &&
+      (res.status === 400 || res.status === 404) &&
+      /model|unavailable|not found|does not exist/i.test(rawText)
+    ) {
+      triedModelDiscovery = true
+      const available = await listOpenAiCompatibleModels(cred.baseUrl, cred.apiKey)
+      const fallbackModel = pickBestAvailableModel(
+        available.filter((m) => m !== activeModel),
+        ['big-pickle', 'minimax-m2.5-free', 'kimi-k2.5-free', 'gpt-5-nano', 'gpt-4.1-mini', 'gpt-4.1', 'claude-sonnet-4-5']
+      )
+      if (fallbackModel) {
+        activeModel = fallbackModel
+        ;({ res, data, rawText } = await callOnce(activeModel))
+      }
+    }
+
+    if (!data) {
       throw new Error(`${providerLabel} retornou resposta inválida (${res.status}): ${rawText.slice(0, 140)}`)
     }
 
@@ -1320,7 +1379,10 @@ async function runAnthropicTurn(p: ProviderTurnParams): Promise<{ replyText: str
 async function runAntigravityGeminiTurn(p: ProviderTurnParams): Promise<{ replyText: string }> {
   const { cred, agent, world, ceoName, promptText, images, context, group } = p
   const client = new GoogleGenAI({ apiKey: cred.apiKey })
-  const modelToUse = cred.model || GEMINI_MODEL
+  // Se o modelo salvo estiver sem cota/indisponível, tenta os próximos Gemini da lista
+  const candidateModels = Array.from(
+    new Set([cred.model || GEMINI_MODEL, 'gemini-3.8-flash', 'gemini-2.5-flash', 'gemini-2.5-flash-lite'])
+  )
 
   // Em grupos a conversa é compartilhada: o histórico vai no próprio texto em vez do previous_interaction_id da DM
   const transcriptText =
@@ -1353,49 +1415,61 @@ async function runAntigravityGeminiTurn(p: ProviderTurnParams): Promise<{ replyT
     }
   }
 
-  let interaction: any = await create({
-    model: modelToUse,
-    input: firstInput,
-    system_instruction: buildWorldAwareSystemPrompt(agent, world, ceoName, group),
-    tools: AGENCY_TOOLS,
-    previous_interaction_id: group ? undefined : agent.lastInteractionId,
-  })
+  let lastErr: any = null
+  for (const modelToUse of candidateModels) {
+    try {
+      let interaction: any = await create({
+        model: modelToUse,
+        input: firstInput,
+        system_instruction: buildWorldAwareSystemPrompt(agent, world, ceoName, group),
+        tools: AGENCY_TOOLS,
+        previous_interaction_id: group ? undefined : agent.lastInteractionId,
+      })
 
-  let rounds = 0
-  while (rounds < MAX_TOOL_ROUNDS) {
-    const steps: any[] = Array.isArray(interaction.steps) ? interaction.steps : []
-    const functionCalls = steps.filter((step) => step.type === 'function_call')
-    if (functionCalls.length === 0) break
+      let rounds = 0
+      while (rounds < MAX_TOOL_ROUNDS) {
+        const steps: any[] = Array.isArray(interaction.steps) ? interaction.steps : []
+        const functionCalls = steps.filter((step) => step.type === 'function_call')
+        if (functionCalls.length === 0) break
 
-    const results = runToolBatch(
-      functionCalls.map((call) => ({ name: String(call.name), args: call.arguments ?? {} })),
-      p
-    )
-    const toolResults = functionCalls.map((call, i) => ({
-      type: 'function_result' as const,
-      call_id: call.id,
-      name: call.name,
-      result: results[i],
-    }))
+        const results = runToolBatch(
+          functionCalls.map((call) => ({ name: String(call.name), args: call.arguments ?? {} })),
+          p
+        )
+        const toolResults = functionCalls.map((call, i) => ({
+          type: 'function_result' as const,
+          call_id: call.id,
+          name: call.name,
+          result: results[i],
+        }))
 
-    interaction = await create({
-      model: modelToUse,
-      previous_interaction_id: interaction.id,
-      input: toolResults,
-      system_instruction: buildWorldAwareSystemPrompt(agent, world, ceoName, group),
-      tools: AGENCY_TOOLS,
-    })
-    rounds++
+        interaction = await create({
+          model: modelToUse,
+          previous_interaction_id: interaction.id,
+          input: toolResults,
+          system_instruction: buildWorldAwareSystemPrompt(agent, world, ceoName, group),
+          tools: AGENCY_TOOLS,
+        })
+        rounds++
+      }
+
+      if (!group) {
+        const pendingCalls = (Array.isArray(interaction.steps) ? interaction.steps : []).some(
+          (step: any) => step.type === 'function_call'
+        )
+        agent.lastInteractionId = pendingCalls ? undefined : interaction.id
+      }
+
+      return { replyText: fallbackReply(p, String(interaction.output_text || '').trim()) }
+    } catch (err: any) {
+      lastErr = err
+      if (!group) agent.lastInteractionId = undefined
+      if (p.actions.length > 0) throw err
+      // Só tenta o próximo modelo em erros de cota, modelo inexistente ou sobrecarga
+      if (!/429|503|404|rate limit|quota|not found|unavailable/i.test(String(err?.message || ''))) throw err
+    }
   }
-
-  if (!group) {
-    const pendingCalls = (Array.isArray(interaction.steps) ? interaction.steps : []).some(
-      (step: any) => step.type === 'function_call'
-    )
-    agent.lastInteractionId = pendingCalls ? undefined : interaction.id
-  }
-
-  return { replyText: fallbackReply(p, String(interaction.output_text || '').trim()) }
+  throw lastErr || new Error('Nenhum modelo Gemini disponível.')
 }
 
 export async function runAgentConversationTurn(params: {

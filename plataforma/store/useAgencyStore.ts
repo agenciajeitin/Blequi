@@ -67,6 +67,8 @@ interface NewAgentInput {
   zone: StudioZoneId
   provider?: AgentProviderId
   modelLabel?: string
+  apiKey?: string
+  model?: string
   systemPrompt: string
   currentTask: string
   skills: string[]
@@ -263,6 +265,11 @@ interface AgencyState {
     geminiApiKey?: string
     newCeoCode?: string
   }) => Promise<{ ok: boolean; error?: string }>
+  testProviderConfig: (payload: {
+    providerId: ExternalAiProviderId
+    apiKey?: string
+    baseUrl?: string
+  }) => Promise<{ ok: boolean; message?: string; error?: string; models?: string[] }>
   toggleDeliverable: (projectId: string, deliverableId: string) => void
 }
 
@@ -1117,7 +1124,10 @@ export const useAgencyStore = create<AgencyState>((set, get) => {
         get().applySharedState(data.state)
         const last = (data.state as SharedWorldState).agents.at(-1)
         set({ selectedAgentId: last?.id ?? null, isCreateModalOpen: false })
-        get().showToast(`✨ ${input.name} entrou na Ilha Blequi!`)
+        if (input.apiKey || input.model) {
+          void get().fetchServerMeta()
+        }
+        get().showToast(`✨ ${input.name} entrou na Sede da Blequi pronto(a) para responder!`)
       }
     },
 
@@ -1166,6 +1176,20 @@ export const useAgencyStore = create<AgencyState>((set, get) => {
         return { ok: true }
       } catch {
         return { ok: false, error: 'Não foi possível conectar ao servidor local.' }
+      }
+    },
+
+    testProviderConfig: async (payload) => {
+      try {
+        const res = await fetch('/api/agency/test-provider', {
+          method: 'POST',
+          headers: apiHeaders(),
+          body: JSON.stringify(payload),
+        })
+        const data = await res.json()
+        return data
+      } catch {
+        return { ok: false, error: 'Erro ao testar conexão com o servidor local.' }
       }
     },
 

@@ -1,64 +1,68 @@
 import { useEffect, useState } from 'react'
-import { Bot, Building2, User, X } from 'lucide-react'
-import { AGENT_PROVIDERS } from '@funcionarios/providers'
-import { SEDE_ZONE, agentProviderToExternal, getActiveAgentProviders } from '@funcionarios/sede'
+import { Bot, Building2, KeyRound, User, X } from 'lucide-react'
+import { AGENT_PROVIDERS, PROVIDER_ORDER } from '@funcionarios/providers'
+import { SEDE_ZONE, agentProviderToExternal as toExternalId } from '@funcionarios/sede'
+import { EXTERNAL_AI_PROVIDER_MAP } from '@funcionarios/aiProvidersCatalog'
 import type { AgentProviderId, MemberEntityType } from '@funcionarios/types'
 import { useAgencyStore } from '@plataforma/store/useAgencyStore'
+import { AiProviderLogo } from './AiProviderLogo'
+
 
 export function CreateAgentModal() {
   const isOpen = useAgencyStore((s) => s.isCreateModalOpen)
+  const serverMeta = useAgencyStore((s) => s.serverMeta)
   const setCreateModalOpen = useAgencyStore((s) => s.setCreateModalOpen)
   const createAgent = useAgencyStore((s) => s.createAgent)
-  const serverMeta = useAgencyStore((s) => s.serverMeta)
-  const fetchServerMeta = useAgencyStore((s) => s.fetchServerMeta)
-  const setSettingsOpen = useAgencyStore((s) => s.setSettingsOpen)
 
   const [entityType, setEntityType] = useState<MemberEntityType>('ai')
   const [name, setName] = useState('')
   const [role, setRole] = useState('')
-  const [provider, setProvider] = useState<AgentProviderId | ''>('')
+  const [provider, setProvider] = useState<AgentProviderId>('opencode')
+  const [apiKeyDraft, setApiKeyDraft] = useState('')
   const [skillsText, setSkillsText] = useState('')
   const [currentTask, setCurrentTask] = useState('')
 
-  const activeProviders = getActiveAgentProviders(serverMeta?.aiProviders)
-
-  // Atualiza a lista de IAs ativas sempre que o modal abre
+  // Auto-select the first configured AI provider when opening the modal
   useEffect(() => {
-    if (isOpen) void fetchServerMeta()
-  }, [isOpen, fetchServerMeta])
-
-  // Pré-seleciona a primeira IA ativa (e corrige se a escolhida perdeu a chave)
-  useEffect(() => {
-    if (activeProviders.length === 0) return
-    if (!provider || !activeProviders.includes(provider)) setProvider(activeProviders[0])
-  }, [activeProviders.join(','), provider])
+    if (!isOpen || !serverMeta?.aiProviders) return
+    const firstConfigured = PROVIDER_ORDER.find((id) =>
+      serverMeta.aiProviders?.some((p) => p.id === toExternalId(id) && p.configured)
+    )
+    if (firstConfigured) setProvider(firstConfigured)
+    setApiKeyDraft('')
+  }, [isOpen, serverMeta?.aiProviders])
 
   if (!isOpen) return null
 
-  const aiBlocked = entityType === 'ai' && activeProviders.length === 0
+  const selectedExtId = toExternalId(provider)
+  const selectedExtMeta = EXTERNAL_AI_PROVIDER_MAP[selectedExtId]
+  const selectedStatus = serverMeta?.aiProviders?.find((p) => p.id === selectedExtId)
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault()
-    if (!name.trim() || !role.trim() || aiBlocked) return
+    if (!name.trim() || !role.trim()) return
 
     const skills = skillsText
       .split(',')
       .map((s) => s.trim())
       .filter(Boolean)
 
-    createAgent({
+    void createAgent({
       name,
       entityType,
       role,
       zone: SEDE_ZONE,
-      provider: entityType === 'ai' && provider ? provider : undefined,
+      provider: entityType === 'ai' ? provider : undefined,
+      apiKey: entityType === 'ai' && apiKeyDraft.trim() ? apiKeyDraft.trim() : undefined,
+      model: entityType === 'ai' ? selectedStatus?.model || selectedExtMeta.defaultModel : undefined,
       currentTask,
-      systemPrompt: `Você é ${name}, atuando como ${role} na Ilha Blequi.`,
+      systemPrompt: `Você é ${name}, atuando como ${role} na Sede da Blequi junto com os CEOs Raynocas e Kafuzinho.`,
       skills,
     })
 
     setName('')
     setRole('')
+    setApiKeyDraft('')
     setSkillsText('')
     setCurrentTask('')
   }
@@ -70,7 +74,7 @@ export function CreateAgentModal() {
     >
       <div
         onClick={(e) => e.stopPropagation()}
-        className="cw-pop-in relative w-full max-w-lg rounded-[32px] bg-white shadow-[0_28px_70px_rgba(24,42,88,0.34)]"
+        className="cw-pop-in relative flex max-h-[90vh] w-full max-w-lg flex-col rounded-[32px] bg-white shadow-[0_28px_70px_rgba(24,42,88,0.34)]"
       >
         <button
           type="button"
@@ -85,10 +89,10 @@ export function CreateAgentModal() {
           <p className="text-xs font-extrabold uppercase tracking-wider text-[#02c6a7]">
             Expansão da Equipe
           </p>
-          <h2 className="text-lg font-black text-[#3b3777]">Novo Especialista na Ilha Blequi</h2>
+          <h2 className="text-lg font-black text-[#3b3777]">Novo Especialista na Sede da Blequi</h2>
         </div>
 
-        <form onSubmit={handleSubmit} className="space-y-4 p-6">
+        <form onSubmit={handleSubmit} className="flex-1 space-y-4 overflow-y-auto p-6">
           <div className="grid grid-cols-2 gap-2">
             <button
               type="button"
@@ -139,58 +143,89 @@ export function CreateAgentModal() {
             </div>
           </div>
 
-          <div className="flex items-center gap-2 rounded-2xl bg-[#f5f9ff] px-3.5 py-2 text-[11px] font-bold text-[#6c6996]">
-            <Building2 className="h-4 w-4 shrink-0 text-[#02c6a7]" />
-            Trabalha na Sede da Blequi, com mesa própria junto da equipe.
-          </div>
-
           {entityType === 'ai' && (
-            <div>
-              <label className="mb-1 block text-xs font-black text-[#3b3777]">IA deste agente</label>
-              {activeProviders.length === 0 ? (
-                <button
-                  type="button"
-                  onClick={() => setSettingsOpen(true)}
-                  className="w-full rounded-2xl border-2 border-dashed border-[#f6b93b] bg-[#fff8dc] p-3 text-left text-[11px] font-bold text-[#a16207]"
-                >
-                  Nenhuma IA ativa. Cole uma chave em Governança Local antes de contratar um agente de IA.
-                </button>
-              ) : (
-                <div className="grid grid-cols-2 gap-1.5">
-                  {activeProviders.map((id) => {
-                    const p = AGENT_PROVIDERS[id]
-                    const model = serverMeta?.aiProviders?.find((st) => st.id === agentProviderToExternal(id))?.model
-                    const selected = provider === id
-                    return (
-                      <button
-                        key={p.id}
-                        type="button"
-                        onClick={() => setProvider(id)}
-                        className={`flex items-center gap-2 rounded-full border-2 px-3 py-2 text-left text-xs font-extrabold transition-all ${
-                          selected ? 'border-[#3b3777] bg-[#f4f7ff] text-[#3b3777]' : 'border-[#edf2f9] bg-white text-[#7c79a6]'
+            <div className="space-y-2.5 rounded-[22px] bg-[#f5f9ff] p-3.5">
+              <div className="flex items-center justify-between">
+                <label className="text-xs font-black text-[#3b3777]">
+                  Escolha a IA deste agente (puxa os dados salvos da API)
+                </label>
+              </div>
+              <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+                {PROVIDER_ORDER.map((id) => {
+                  const p = AGENT_PROVIDERS[id]
+                  const extId = toExternalId(id)
+                  const st = serverMeta?.aiProviders?.find((x) => x.id === extId)
+                  const active = provider === id
+                  return (
+                    <button
+                      key={id}
+                      type="button"
+                      onClick={() => setProvider(id)}
+                      className={`flex flex-col items-start gap-1 rounded-2xl border-2 p-2.5 text-left transition-all ${
+                        active
+                          ? 'border-[#02c6a7] bg-white shadow-sm'
+                          : 'border-transparent bg-white/80 hover:border-[#d5e0f0]'
+                      }`}
+                    >
+                      <div className="flex w-full items-center justify-between">
+                        <AiProviderLogo id={extId} className="h-5 w-5" />
+                        <span
+                          className={`h-2 w-2 rounded-full ${
+                            st?.configured ? 'bg-[#02c6a7]' : 'bg-[#cbd5e1]'
+                          }`}
+                        />
+                      </div>
+                      <span className="truncate text-[11px] font-black text-[#3b3777]">{p.name}</span>
+                      <span
+                        className={`truncate text-[9px] font-bold ${
+                          st?.configured ? 'text-[#01967e]' : 'text-[#9ea4be]'
                         }`}
-                        title={model}
                       >
-                        <span className="h-2.5 w-2.5 shrink-0 rounded-full" style={{ backgroundColor: p.color }} />
-                        {p.name}
-                      </button>
-                    )
-                  })}
+                        {st?.configured ? st.model : 'Sem chave'}
+                      </span>
+                    </button>
+                  )
+                })}
+              </div>
+
+              {selectedStatus?.configured ? (
+                <p className="rounded-xl bg-[#e9fbf7] px-3 py-1.5 text-[11px] font-bold text-[#01967e]">
+                  ✓ API de {selectedExtMeta.name} já salva ({selectedStatus.model}) — pronto para responder na hora!
+                </p>
+              ) : (
+                <div>
+                  <label className="mb-1 flex items-center gap-1 text-[11px] font-black text-[#3b3777]">
+                    <KeyRound className="h-3 w-3 text-[#02c6a7]" />
+                    Chave API de {selectedExtMeta.name} (salva automaticamente)
+                  </label>
+                  <input
+                    type="password"
+                    value={apiKeyDraft}
+                    onChange={(e) => setApiKeyDraft(e.target.value)}
+                    placeholder={selectedExtMeta.keyPlaceholder}
+                    className="w-full rounded-full border-2 border-[#edf2f9] bg-white px-3.5 py-2 font-mono text-xs font-semibold text-[#3b3777] placeholder:text-[#9ea4be] focus:border-[#02c6a7] focus:outline-none"
+                  />
                 </div>
               )}
             </div>
           )}
 
-          <div>
-            <label className="mb-1 block text-xs font-black text-[#3b3777]">
-              Skills (separadas por vírgula)
-            </label>
-            <input
-              value={skillsText}
-              onChange={(e) => setSkillsText(e.target.value)}
-              placeholder="Three.js, Shaders, Direção de Arte, UI"
-              className="w-full rounded-full border-2 border-[#edf2f9] bg-[#f5f8fd] px-4 py-2 text-xs font-bold text-[#3b3777] placeholder:text-[#9ea4be] focus:border-[#02c6a7] focus:bg-white focus:outline-none"
-            />
+          <div className="grid grid-cols-2 gap-3">
+            <div className="flex items-center gap-2 rounded-2xl bg-[#f5f9ff] px-3 py-2 text-[11px] font-bold text-[#6c6996]">
+              <Building2 className="h-4 w-4 shrink-0 text-[#02c6a7]" />
+              Mesa própria na Sede da Blequi
+            </div>
+            <div>
+              <label className="mb-1 block text-xs font-black text-[#3b3777]">
+                Skills (separadas por vírgula)
+              </label>
+              <input
+                value={skillsText}
+                onChange={(e) => setSkillsText(e.target.value)}
+                placeholder="Three.js, Shaders, Arte"
+                className="w-full rounded-full border-2 border-[#edf2f9] bg-[#f5f8fd] px-4 py-2 text-xs font-bold text-[#3b3777] placeholder:text-[#9ea4be] focus:border-[#02c6a7] focus:bg-white focus:outline-none"
+              />
+            </div>
           </div>
 
           <div className="flex items-center justify-end gap-2 pt-2">
@@ -201,9 +236,9 @@ export function CreateAgentModal() {
             >
               Cancelar
             </button>
-            <button type="submit" disabled={aiBlocked} className="cw-cta cw-cta-mint disabled:opacity-50">
+            <button type="submit" className="cw-cta cw-cta-mint">
               <span className="cw-cta-inner px-6 py-2.5 text-xs font-extrabold">
-                Adicionar à Ilha
+                Criar e Ativar Agente
               </span>
             </button>
           </div>

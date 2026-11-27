@@ -20,6 +20,7 @@ import type { AgentMood, AgentProviderId, AgentStatus } from '@funcionarios/type
 import { useAgencyStore } from '@plataforma/store/useAgencyStore'
 import { coastalAudio } from '@ambiente/audio/coastalAudio'
 import { AgentPortrait } from './chat/AgentPortrait'
+import { AiProviderLogo } from './AiProviderLogo'
 import { ChatComposer } from './chat/ChatComposer'
 import { ChatMessageList } from './chat/ChatMessageList'
 
@@ -212,6 +213,60 @@ export function AgentInspector() {
       {/* TAB 1: LIVE GEMINI CHAT & SELF-BUILDING */}
       {tab === 'chat' && (
         <div className="flex min-h-0 flex-1 flex-col">
+          {/* Barra "IA deste agente": só as contas de IA com chave ativa */}
+          {agent.entityType === 'ai' && (
+            <div className="border-b border-[#edf2f9] bg-white px-4 py-2">
+              <div className="mb-1 flex items-center justify-between text-[10px] font-extrabold uppercase tracking-wider text-[#7c79a6]">
+                <span>IA deste agente</span>
+                <span className="truncate pl-2 font-mono normal-case text-[#02c6a7]">
+                  {serverMeta?.aiProviders?.find((p) => p.id === currentExternal)?.model || agent.modelLabel}
+                </span>
+              </div>
+              {activeProviders.length === 0 ? (
+                <button
+                  type="button"
+                  onClick={() => setSettingsOpen(true)}
+                  className="w-full rounded-xl border-2 border-dashed border-[#dfe6f2] px-3 py-1.5 text-left text-[11px] font-semibold text-[#7c79a6] hover:bg-[#f8fbff]"
+                >
+                  Nenhuma IA ativa. Toque para colar uma chave em Governança Local.
+                </button>
+              ) : (
+                <div className="grid grid-cols-2 gap-1.5">
+                  {activeProviders.map((id) => {
+                    const prov = AGENT_PROVIDERS[id]
+                    const extId = agentProviderToExternal(id)
+                    const status = serverMeta?.aiProviders?.find((p) => p.id === extId)
+                    const selected = currentExternal === extId
+                    return (
+                      <button
+                        key={id}
+                        type="button"
+                        onClick={() => {
+                          coastalAudio.playPop(600, 0.05)
+                          void updateAgentProvider(agent.id, id as AgentProviderId)
+                        }}
+                        title={`${prov.name} · ${status?.model ?? ''}`}
+                        className={`flex items-center justify-center gap-1 rounded-xl border-2 px-1.5 py-1.5 text-[10px] font-extrabold transition-all ${
+                          selected
+                            ? 'border-[#02c6a7] bg-[#e9fbf7] text-[#3b3777]'
+                            : 'border-[#eef2f8] bg-[#f8fbff] text-[#6c6996] hover:border-[#cfd8e8]'
+                        }`}
+                      >
+                        <AiProviderLogo id={extId} className="h-3.5 w-3.5 shrink-0" />
+                        <span className="truncate">{prov.name}</span>
+                      </button>
+                    )
+                  })}
+                </div>
+              )}
+              {activeProviders.length > 0 && !currentIsActive && agent.provider && (
+                <p className="mt-1.5 text-[10px] font-bold text-[#a16207]">
+                  {AGENT_PROVIDERS[agent.provider].name} está sem chave ativa — escolha uma IA acima.
+                </p>
+              )}
+            </div>
+          )}
+
           <div className="grid grid-cols-2 gap-2 border-b border-[#edf2f9] bg-[#f8fbff] px-4 py-2.5">
             <button
               type="button"
@@ -400,55 +455,6 @@ export function AgentInspector() {
               ))}
             </div>
           </section>
-
-          {agent.entityType === 'ai' && (
-            <section>
-              <label className="mb-2 block text-xs font-black text-[#3b3777]">IA deste agente</label>
-              {activeProviders.length === 0 ? (
-                <button
-                  type="button"
-                  onClick={() => setSettingsOpen(true)}
-                  className="w-full rounded-2xl border-2 border-dashed border-[#dfe6f2] p-3 text-left text-[11px] font-semibold text-[#7c79a6] hover:bg-[#f8fbff]"
-                >
-                  Nenhuma IA ativa ainda. Toque aqui para colar uma chave em Governança Local.
-                </button>
-              ) : (
-                <div className="space-y-1.5">
-                  {activeProviders.map((id) => {
-                    const prov = AGENT_PROVIDERS[id]
-                    const status = serverMeta?.aiProviders?.find((p) => p.id === agentProviderToExternal(id))
-                    const selected = agentProviderToExternal(agent.provider) === agentProviderToExternal(id)
-                    return (
-                      <button
-                        key={prov.id}
-                        type="button"
-                        onClick={() => updateAgentProvider(agent.id, prov.id as AgentProviderId)}
-                        className={`flex w-full items-center justify-between rounded-full border-2 px-3.5 py-2 text-left transition-all ${
-                          selected
-                            ? 'border-[#3b3777] bg-[#f4f7ff]'
-                            : 'border-[#edf2f9] bg-white hover:border-[#d5e0f0]'
-                        }`}
-                      >
-                        <span className="flex items-center gap-2 text-xs font-extrabold text-[#3b3777]">
-                          <span className="h-2.5 w-2.5 rounded-full" style={{ backgroundColor: prov.color }} />
-                          {prov.name}
-                        </span>
-                        <span className="truncate pl-2 font-mono text-[10px] font-bold" style={{ color: prov.color }}>
-                          {status?.model || prov.badge}
-                        </span>
-                      </button>
-                    )
-                  })}
-                  {!currentIsActive && agent.provider && (
-                    <p className="rounded-2xl bg-[#fff8dc] px-3 py-2 text-[11px] font-bold text-[#a16207]">
-                      {agent.name} usa {AGENT_PROVIDERS[agent.provider].name}, que está sem chave ativa — escolha uma
-                      das IAs acima.
-                    </p>
-                  )}
-                </div>
-              )}
-            </section>
-          )}
 
           <section>
             <label className="mb-2 block text-xs font-black text-[#3b3777]">Skills</label>
