@@ -1,12 +1,24 @@
-node_modules
-dist
-.DS_Store
-*.local
+# Dependencies & build outputs
+node_modules/
+dist/
+.vite/
+*.tsbuildinfo
+
+# Secrets & local environment (NEVER commit!)
 .env
 .env.*
 !.env.example
+*.local
+
+# Runtime world state (each host persists locally; live sync runs over SSE)
 estado-mundo/agency-state.json
+!estado-mundo/.gitkeep
 
-*.tsbuildinfo
+# OS & editor junk
+.DS_Store
+Thumbs.db
+desktop.ini
+*.log
 
+# Temporary AI scratchpad
 _rascunhos-ia/

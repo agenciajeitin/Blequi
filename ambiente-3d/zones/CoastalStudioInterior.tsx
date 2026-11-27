@@ -800,28 +800,36 @@ export function CoastalStudioInterior({
           <planeGeometry args={[2.45, 1.1]} />
           <meshStandardMaterial color={exitHovered ? '#02c6a7' : '#86e0cf'} roughness={0.85} />
         </mesh>
-        {/* Two Sleek White Archway Pillars framing the South Exit */}
-        <mesh position={[-1.32, 1.18, 0.1]} castShadow>
-          <boxGeometry args={[0.28, 2.36, 0.34]} />
+        {/* Low Open-Air Coastal Entrance Bollards (never obstructs 3rd-person camera!) */}
+        <mesh position={[-1.38, 0.48, 0.08]} castShadow>
+          <boxGeometry args={[0.3, 0.96, 0.34]} />
           <meshStandardMaterial color="#ffffff" roughness={0.45} />
         </mesh>
-        <mesh position={[1.32, 1.18, 0.1]} castShadow>
-          <boxGeometry args={[0.28, 2.36, 0.34]} />
-          <meshStandardMaterial color="#ffffff" roughness={0.45} />
-        </mesh>
-        {/* Mint Top Arch Header */}
-        <mesh position={[0, 2.42, 0.1]} castShadow>
-          <boxGeometry args={[3.04, 0.28, 0.42]} />
+        <mesh position={[-1.38, 1.06, 0.08]}>
+          <sphereGeometry args={[0.14, 12, 10]} />
           <meshStandardMaterial
-            color={accentColor}
-            emissive={exitHovered ? accentColor : '#000000'}
-            emissiveIntensity={exitHovered ? 0.35 : 0}
-            roughness={0.45}
+            color="#fff6d6"
+            emissive={exitHovered ? '#02c6a7' : accentColor}
+            emissiveIntensity={exitHovered ? 1.2 : 0.75}
+            roughness={0.25}
+          />
+        </mesh>
+        <mesh position={[1.38, 0.48, 0.08]} castShadow>
+          <boxGeometry args={[0.3, 0.96, 0.34]} />
+          <meshStandardMaterial color="#ffffff" roughness={0.45} />
+        </mesh>
+        <mesh position={[1.38, 1.06, 0.08]}>
+          <sphereGeometry args={[0.14, 12, 10]} />
+          <meshStandardMaterial
+            color="#fff6d6"
+            emissive={exitHovered ? '#02c6a7' : accentColor}
+            emissiveIntensity={exitHovered ? 1.2 : 0.75}
+            roughness={0.25}
           />
         </mesh>
 
         {exitHovered && (
-          <Html position={[0, 2.95, 0]} center distanceFactor={16} zIndexRange={[10, 0]} style={{ pointerEvents: 'auto' }}>
+          <Html position={[0, 1.65, 0]} center distanceFactor={16} zIndexRange={[10, 0]} style={{ pointerEvents: 'auto' }}>
             <button
               type="button"
               onClick={(e) => {

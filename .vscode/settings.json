@@ -1,0 +1,15 @@
+{
+  "files.eol": "\n",
+  "editor.tabSize": 2,
+  "editor.insertSpaces": true,
+  "editor.formatOnSave": false,
+  "typescript.tsdk": "node_modules/typescript/lib",
+  "typescript.preferGoToSourceDefinition": true,
+  "tailwindCSS.experimental.classRegex": [
+    ["className\\s*=\\s*`([^`]*)`"]
+  ],
+  "files.exclude": {
+    "**/node_modules": true,
+    "**/*.tsbuildinfo": true
+  }
+}
