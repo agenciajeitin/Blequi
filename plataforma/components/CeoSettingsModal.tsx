@@ -31,6 +31,7 @@ export function CeoSettingsModal() {
   const proposals = useAgencyStore((s) => s.proposals)
   const setAutoBuild = useAgencyStore((s) => s.setAutoBuildWithoutApproval)
   const saveServerConfig = useAgencyStore((s) => s.saveServerConfig)
+  const testProviderConfig = useAgencyStore((s) => s.testProviderConfig)
   const resolveProposal = useAgencyStore((s) => s.resolveProposal)
 
   const [selectedProvider, setSelectedProvider] = useState<ExternalAiProviderId>('antigravity')
@@ -40,6 +41,8 @@ export function CeoSettingsModal() {
   const [newCeoCode, setNewCeoCode] = useState('')
   const [copiedUrl, setCopiedUrl] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
+  const [testing, setTesting] = useState(false)
+  const [discoveredModels, setDiscoveredModels] = useState<string[]>([])
   const [feedback, setFeedback] = useState<string | null>(null)
 
   const providerMeta = EXTERNAL_AI_PROVIDER_MAP[selectedProvider]
@@ -49,10 +52,30 @@ export function CeoSettingsModal() {
     setApiKeyDraft('')
     setModelDraft(providerStatus?.model || providerMeta.defaultModel)
     setBaseUrlDraft(providerStatus?.baseUrl || providerMeta.defaultBaseUrl)
+    setDiscoveredModels([])
     setFeedback(null)
   }, [selectedProvider, providerStatus?.model, providerStatus?.baseUrl, providerMeta.defaultModel, providerMeta.defaultBaseUrl])
 
   if (!isOpen) return null
+
+  const handleTestProvider = async () => {
+    setTesting(true)
+    setFeedback(null)
+    const res = await testProviderConfig({
+      providerId: selectedProvider,
+      apiKey: apiKeyDraft.trim() || undefined,
+      baseUrl: providerMeta.envBaseUrlKey ? baseUrlDraft.trim() || undefined : undefined,
+    })
+    setTesting(false)
+    if (res.ok) {
+      setFeedback(res.message || `Conexão com ${providerMeta.name} confirmada!`)
+      if (Array.isArray(res.models) && res.models.length > 0) {
+        setDiscoveredModels(res.models)
+      }
+    } else {
+      setFeedback(`⚠️ ${res.error || 'Falha ao testar conexão.'}`)
+    }
+  }
 
   const handleCopy = async (text: string) => {
     try {
@@ -290,7 +313,7 @@ export function CeoSettingsModal() {
                     className="w-full rounded-full border-2 border-[#edf2f9] bg-[#f5f8fd] px-3.5 py-2 font-mono text-xs font-semibold text-[#3b3777] focus:border-[#02c6a7] focus:bg-white focus:outline-none"
                   />
                   <div className="mt-1.5 flex flex-wrap gap-1">
-                    {providerMeta.modelSuggestions.map((m) => (
+                    {Array.from(new Set([...discoveredModels, ...providerMeta.modelSuggestions])).map((m) => (
                       <button
                         key={m}
                         type="button"
@@ -345,23 +368,33 @@ export function CeoSettingsModal() {
                 </p>
               )}
 
-              <div className="flex justify-end gap-2 pt-1">
+              <div className="flex flex-wrap items-center justify-between gap-2 pt-1">
                 <button
                   type="button"
-                  onClick={() => setSettingsOpen(false)}
-                  className="rounded-full bg-[#eef2f8] px-4 py-2 text-xs font-extrabold text-[#6c6996] hover:bg-[#e1e8f3]"
+                  disabled={testing}
+                  onClick={handleTestProvider}
+                  className="rounded-full bg-[#eef4ff] px-4 py-2 text-xs font-extrabold text-[#3b3777] hover:bg-[#dfeaff] disabled:opacity-50"
                 >
-                  Fechar
+                  {testing ? 'Testando...' : 'Testar & Buscar Modelos'}
                 </button>
-                <button
-                  type="submit"
-                  disabled={saving}
-                  className="cw-cta cw-cta-mint disabled:opacity-50"
-                >
-                  <span className="cw-cta-inner px-5 py-2 text-xs font-extrabold">
-                    {saving ? 'Salvando...' : `Salvar ${providerMeta.name}`}
-                  </span>
-                </button>
+                <div className="flex gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setSettingsOpen(false)}
+                    className="rounded-full bg-[#eef2f8] px-4 py-2 text-xs font-extrabold text-[#6c6996] hover:bg-[#e1e8f3]"
+                  >
+                    Fechar
+                  </button>
+                  <button
+                    type="submit"
+                    disabled={saving}
+                    className="cw-cta cw-cta-mint disabled:opacity-50"
+                  >
+                    <span className="cw-cta-inner px-5 py-2 text-xs font-extrabold">
+                      {saving ? 'Salvando...' : `Salvar ${providerMeta.name}`}
+                    </span>
+                  </button>
+                </div>
               </div>
             </form>
           </section>

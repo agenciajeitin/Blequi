@@ -20,9 +20,18 @@ import {
   PROVIDER_ORDER,
   STUDIO_ZONES,
 } from '@funcionarios/providers'
+import type { ExternalAiProviderId } from '@funcionarios/aiProvidersCatalog'
 import type { AgentMood, AgentProviderId, AgentStatus } from '@funcionarios/types'
 import { useAgencyStore } from '@plataforma/store/useAgencyStore'
 import { coastalAudio } from '@ambiente/audio/coastalAudio'
+import { AiProviderLogo } from './AiProviderLogo'
+
+function toExternalId(provider?: AgentProviderId): ExternalAiProviderId {
+  if (provider === 'claude') return 'claude'
+  if (provider === 'opencode') return 'opencode'
+  if (provider === 'codex') return 'openai'
+  return 'antigravity'
+}
 
 const STATUS_OPTIONS: { id: AgentStatus; label: string; dot: string }[] = [
   { id: 'working', label: 'Trabalhando', dot: 'bg-[#02c6a7]' },
@@ -42,6 +51,7 @@ const MOOD_META: Record<AgentMood, { label: string; emoji: string; bg: string; t
 export function AgentInspector() {
   const agents = useAgencyStore((s) => s.agents)
   const props = useAgencyStore((s) => s.props)
+  const serverMeta = useAgencyStore((s) => s.serverMeta)
   const worldView = useAgencyStore((s) => s.worldView)
   const selectedAgentId = useAgencyStore((s) => s.selectedAgentId)
   const chatPendingByAgent = useAgencyStore((s) => s.chatPendingByAgent)
@@ -210,9 +220,54 @@ export function AgentInspector() {
         </div>
       </div>
 
-      {/* TAB 1: LIVE GEMINI CHAT & SELF-BUILDING */}
+      {/* TAB 1: LIVE MULTI-AI CHAT & SELF-BUILDING */}
       {tab === 'chat' && (
         <div className="flex min-h-0 flex-1 flex-col">
+          {/* Quick 4-AI Selector Bar synced with saved API credentials */}
+          {agent.entityType === 'ai' && (
+            <div className="border-b border-[#edf2f9] bg-white px-4 py-2">
+              <div className="mb-1 flex items-center justify-between text-[10px] font-extrabold uppercase tracking-wider text-[#7c79a6]">
+                <span>IA deste agente</span>
+                <span className="font-mono text-[#02c6a7]">
+                  {serverMeta?.aiProviders?.find((p) => p.id === toExternalId(agent.provider))?.model ||
+                    agent.modelLabel}
+                </span>
+              </div>
+              <div className="grid grid-cols-4 gap-1.5">
+                {PROVIDER_ORDER.map((id) => {
+                  const prov = AGENT_PROVIDERS[id]
+                  const extId = toExternalId(id)
+                  const status = serverMeta?.aiProviders?.find((p) => p.id === extId)
+                  const active = toExternalId(agent.provider) === extId
+                  return (
+                    <button
+                      key={id}
+                      type="button"
+                      onClick={() => {
+                        coastalAudio.playPop(600, 0.05)
+                        void updateAgentProvider(agent.id, id)
+                      }}
+                      title={`${prov.name} (${status?.configured ? `API pronta · ${status.model}` : 'Sem chave salva'})`}
+                      className={`flex items-center justify-center gap-1 rounded-xl border-2 px-1.5 py-1.5 text-[10px] font-extrabold transition-all ${
+                        active
+                          ? 'border-[#02c6a7] bg-[#e9fbf7] text-[#3b3777] shadow-xs'
+                          : 'border-[#eef2f8] bg-[#f8fbff] text-[#6c6996] hover:border-[#cfd8e8]'
+                      }`}
+                    >
+                      <AiProviderLogo id={extId} className="h-3.5 w-3.5 shrink-0" />
+                      <span className="truncate">{prov.name}</span>
+                      <span
+                        className={`h-1.5 w-1.5 shrink-0 rounded-full ${
+                          status?.configured ? 'bg-[#02c6a7]' : 'bg-[#cbd5e1]'
+                        }`}
+                      />
+                    </button>
+                  )
+                })}
+              </div>
+            </div>
+          )}
+
           <div className="grid grid-cols-2 gap-2 border-b border-[#edf2f9] bg-[#f8fbff] px-4 py-2.5">
             <button
               type="button"

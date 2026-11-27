@@ -21,7 +21,12 @@ import type {
   WorldTimeOfDay,
   WorldViewMode,
 } from '../funcionarios/types'
-import { computeMood, recalcComfortScore, runAgentConversationTurn } from './geminiAgency'
+import {
+  computeMood,
+  listOpenAiCompatibleModels,
+  recalcComfortScore,
+  runAgentConversationTurn,
+} from './geminiAgency'
 
 function readDotEnv(rootDir: string): Record<string, string> {
   const envPath = path.join(rootDir, '.env')
@@ -180,10 +185,15 @@ function writeStateFileAtomic(stateFilePath: string, state: SharedWorldState) {
 /** Garante campos obrigatórios em estados salvos por versões antigas do app */
 function normalizeState(parsed: SharedWorldState): SharedWorldState {
   const initial = createInitialWorldState()
+  const rawAgents = Array.isArray(parsed.agents) ? parsed.agents : initial.agents
   return {
     ...initial,
     ...parsed,
-    agents: Array.isArray(parsed.agents) ? parsed.agents : initial.agents,
+    agents: rawAgents.map((a) => ({
+      ...a,
+      // Nunca deixar um agente preso em "thinking" após reiniciar o servidor
+      status: a.status === 'thinking' ? 'working' : a.status,
+    })),
     props: Array.isArray(parsed.props) ? parsed.props : initial.props,
     proposals: Array.isArray(parsed.proposals) ? parsed.proposals : [],
     onlineCeos: Array.isArray(parsed.onlineCeos) ? parsed.onlineCeos : [],
@@ -486,6 +496,76 @@ export function blequiAgencyServerPlugin(): Plugin {
             })
           }
 
+          if (pathname === '/api/agency/test-provider' && method === 'POST') {
+            const body = await readJsonBody(req)
+            const providerId = String(body.providerId || '') as ExternalAiProviderId
+            if (!(providerId in EXTERNAL_AI_PROVIDER_MAP)) {
+              return sendJson(res, 400, { ok: false, error: 'Provedor inválido.' })
+            }
+            const meta = EXTERNAL_AI_PROVIDER_MAP[providerId]
+            const { providerCredentials } = getRuntimeConfig(rootDir)
+            const saved = providerCredentials[providerId]
+            const apiKey = sanitizeEnvValue(String(body.apiKey || '')) || saved.apiKey
+            const baseUrl = sanitizeEnvValue(String(body.baseUrl || '')) || saved.baseUrl
+
+            if (!apiKey) {
+              return sendJson(res, 400, {
+                ok: false,
+                error: `Cole a chave ${meta.envApiKey} antes de testar.`,
+              })
+            }
+
+            if (providerId === 'opencode' || providerId === 'openai') {
+              const models = await listOpenAiCompatibleModels(baseUrl, apiKey)
+              if (models.length > 0) {
+                return sendJson(res, 200, {
+                  ok: true,
+                  message: `Conexão OK com ${meta.name}! ${models.length} modelos disponíveis.`,
+                  models: models.slice(0, 12),
+                })
+              }
+              return sendJson(res, 200, {
+                ok: false,
+                error: `Não foi possível listar modelos em ${baseUrl}/models. Verifique a chave e o endpoint.`,
+              })
+            }
+
+            if (providerId === 'claude') {
+              const r = await fetch(`${baseUrl.replace(/\/+$/, '')}/models`, {
+                headers: { 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' },
+              })
+              if (r.ok) {
+                const d = (await r.json()) as { data?: Array<{ id?: string }> }
+                const models = (d.data || []).map((m) => String(m.id || '')).filter(Boolean)
+                return sendJson(res, 200, {
+                  ok: true,
+                  message: `Chave Claude válida! ${models.length} modelos encontrados.`,
+                  models: models.slice(0, 10),
+                })
+              }
+              const txt = await r.text()
+              return sendJson(res, 200, { ok: false, error: `Claude HTTP ${r.status}: ${txt.slice(0, 140)}` })
+            }
+
+            // Antigravity (Gemini)
+            const r = await fetch(
+              `https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(apiKey)}`
+            )
+            if (r.ok) {
+              const d = (await r.json()) as { models?: Array<{ name?: string }> }
+              const models = (d.models || [])
+                .map((m) => String(m.name || '').replace(/^models\//, ''))
+                .filter((id) => id.includes('gemini'))
+              return sendJson(res, 200, {
+                ok: true,
+                message: `Chave Antigravity (Gemini) válida!`,
+                models: models.slice(0, 10),
+              })
+            }
+            const txt = await r.text()
+            return sendJson(res, 200, { ok: false, error: `Gemini HTTP ${r.status}: ${txt.slice(0, 140)}` })
+          }
+
           if ((pathname === '/api/agency/chat' || pathname === '/api/agency/self-build') && method === 'POST') {
             const body = await readJsonBody(req)
             const agent = worldState.agents.find((a) => a.id === body.agentId)
@@ -720,12 +800,17 @@ export function blequiAgencyServerPlugin(): Plugin {
               const ag = worldState.agents.find((a) => a.id === body.agentId)
               if (ag && body.provider in AGENT_PROVIDERS) {
                 const prov = body.provider as AgentProviderId
+                const { providerCredentials } = getRuntimeConfig(rootDir)
+                const extId: ExternalAiProviderId =
+                  prov === 'claude' ? 'claude' : prov === 'opencode' ? 'opencode' : prov === 'codex' ? 'openai' : 'antigravity'
+                const liveModel = providerCredentials[extId]?.model || AGENT_PROVIDERS[prov].defaultModel
                 ag.provider = prov
-                ag.modelLabel = AGENT_PROVIDERS[prov].defaultModel
+                ag.modelLabel = `${AGENT_PROVIDERS[prov].name} · ${liveModel}`
+                ag.lastInteractionId = undefined
                 ag.logs.unshift({
                   id: `log-${Date.now()}`,
                   time: nowTimeLabel(),
-                  message: `Motor conectado: ${AGENT_PROVIDERS[prov].name}.`,
+                  message: `Motor conectado: ${AGENT_PROVIDERS[prov].name} (${liveModel}).`,
                 })
               }
             } else if (action === 'createAgent') {
@@ -736,9 +821,40 @@ export function blequiAgencyServerPlugin(): Plugin {
               const providerId: AgentProviderId | undefined = isAI
                 ? input.provider in AGENT_PROVIDERS
                   ? (input.provider as AgentProviderId)
-                  : 'gemini'
+                  : 'antigravity'
                 : undefined
               const providerMeta = providerId ? AGENT_PROVIDERS[providerId] : null
+
+              // Se o CEO colou uma API key ou modelo direto na criação do agente, já salva sem reiniciar o servidor!
+              if (isAI && providerId) {
+                const extId: ExternalAiProviderId =
+                  providerId === 'claude'
+                    ? 'claude'
+                    : providerId === 'opencode'
+                      ? 'opencode'
+                      : providerId === 'codex'
+                        ? 'openai'
+                        : 'antigravity'
+                const extMeta = EXTERNAL_AI_PROVIDER_MAP[extId]
+                if (typeof input.apiKey === 'string' && sanitizeEnvValue(input.apiKey)) {
+                  writeLocalSecretKey(rootDir, extMeta.envApiKey, sanitizeEnvValue(input.apiKey))
+                }
+                if (typeof input.model === 'string' && sanitizeEnvValue(input.model)) {
+                  writeLocalSecretKey(rootDir, extMeta.envModelKey, sanitizeEnvValue(input.model))
+                }
+              }
+
+              const { providerCredentials } = getRuntimeConfig(rootDir)
+              const extIdForLabel: ExternalAiProviderId =
+                providerId === 'claude'
+                  ? 'claude'
+                  : providerId === 'opencode'
+                    ? 'opencode'
+                    : providerId === 'codex'
+                      ? 'openai'
+                      : 'antigravity'
+              const resolvedModel = providerCredentials[extIdForLabel]?.model || providerMeta?.defaultModel || ''
+
               const existingInZone = worldState.agents.filter((a) => a.zone === zone).length
               const roomSize = ROOM_SCALES[worldState.roomScale].size
 
@@ -749,7 +865,7 @@ export function blequiAgencyServerPlugin(): Plugin {
                 role: String(input.role || 'Especialista 3D').trim(),
                 zone,
                 provider: providerId,
-                modelLabel: isAI ? providerMeta!.defaultModel : 'Pessoa Real',
+                modelLabel: isAI ? `${providerMeta!.name} · ${resolvedModel}` : 'Pessoa Real',
                 status: 'working',
                 currentTask: String(input.currentTask || 'Pronto para criar na Ilha Blequi.'),
                 systemPrompt:

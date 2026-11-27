@@ -973,6 +973,50 @@ const PROVIDER_DISPLAY_NAME: Record<ExternalAiProviderId, string> = {
   claude: 'Claude',
 }
 
+async function fetchWithTimeout(url: string, init: RequestInit, timeoutMs = 35_000): Promise<Response> {
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), timeoutMs)
+  try {
+    return await fetch(url, { ...init, signal: controller.signal })
+  } catch (err: any) {
+    if (err?.name === 'AbortError') {
+      throw new Error(`Tempo limite excedido (${Math.round(timeoutMs / 1000)}s) aguardando resposta da API.`)
+    }
+    throw err
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
+export async function listOpenAiCompatibleModels(baseUrl: string, apiKey: string): Promise<string[]> {
+  try {
+    const endpoint = `${baseUrl.replace(/\/+$/, '')}/models`
+    const res = await fetchWithTimeout(
+      endpoint,
+      {
+        method: 'GET',
+        headers: { Authorization: `Bearer ${apiKey}` },
+      },
+      12_000
+    )
+    if (!res.ok) return []
+    const data = (await res.json()) as { data?: Array<{ id?: string }> }
+    if (!Array.isArray(data?.data)) return []
+    return data.data
+      .map((m) => (typeof m?.id === 'string' ? m.id.trim() : ''))
+      .filter((id) => Boolean(id) && !/embedding|whisper|tts|dall-e|moderation|audio/i.test(id))
+  } catch {
+    return []
+  }
+}
+
+function pickBestAvailableModel(available: string[], preferredOrder: string[]): string | null {
+  for (const pref of preferredOrder) {
+    if (available.includes(pref)) return pref
+  }
+  return available[0] ?? null
+}
+
 function buildRecentChatContext(agent: AgentEmployee): { role: 'user' | 'assistant'; text: string }[] {
   const out: { role: 'user' | 'assistant'; text: string }[] = []
   // Skip the very last message because it is the current userMessage we pass explicitly
@@ -1003,8 +1047,9 @@ async function runOpenAiCompatibleTurn(params: {
   promptText: string
   rootDir: string
   actions: string[]
+  onModelResolved?: (model: string) => void
 }): Promise<{ replyText: string }> {
-  const { providerLabel, cred, agent, world, ceoName, promptText, rootDir, actions } = params
+  const { providerLabel, cred, agent, world, ceoName, promptText, rootDir, actions, onModelResolved } = params
   const endpoint = `${cred.baseUrl.replace(/\/+$/, '')}/chat/completions`
 
   const openAiTools = AGENCY_TOOLS.map((t) => ({
@@ -1023,30 +1068,61 @@ async function runOpenAiCompatibleTurn(params: {
     { role: 'user', content: promptText },
   ]
 
+  let activeModel = cred.model
+  let triedModelDiscovery = false
   let finalText = ''
+
   for (let round = 0; round < 8; round++) {
     // Refresh system prompt so agent sees updated world state after tool calls
     messages[0] = { role: 'system', content: buildWorldAwareSystemPrompt(agent, world, ceoName) }
 
-    const res = await fetch(endpoint, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${cred.apiKey}`,
-      },
-      body: JSON.stringify({
-        model: cred.model,
-        messages,
-        tools: openAiTools,
-        tool_choice: 'auto',
-      }),
-    })
+    const callOnce = async (modelId: string) => {
+      const res = await fetchWithTimeout(endpoint, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${cred.apiKey}`,
+        },
+        body: JSON.stringify({
+          model: modelId,
+          messages,
+          tools: openAiTools,
+          tool_choice: 'auto',
+        }),
+      })
+      const rawText = await res.text()
+      let data: any = null
+      try {
+        data = JSON.parse(rawText)
+      } catch {
+        return { res, data: null, rawText }
+      }
+      return { res, data, rawText }
+    }
 
-    const rawText = await res.text()
-    let data: any = null
-    try {
-      data = JSON.parse(rawText)
-    } catch {
+    let { res, data, rawText } = await callOnce(activeModel)
+
+    // Auto-discover a working model if the saved model is unavailable on this endpoint (e.g. OpenCode Zen)
+    if (
+      !res.ok &&
+      !triedModelDiscovery &&
+      (res.status === 400 || res.status === 404) &&
+      /model|unavailable|not found|does not exist/i.test(rawText)
+    ) {
+      triedModelDiscovery = true
+      const available = await listOpenAiCompatibleModels(cred.baseUrl, cred.apiKey)
+      const fallbackModel = pickBestAvailableModel(
+        available.filter((m) => m !== activeModel),
+        ['big-pickle', 'minimax-m2.5-free', 'kimi-k2.5-free', 'gpt-5-nano', 'gpt-4.1-mini', 'gpt-4.1', 'claude-sonnet-4-5']
+      )
+      if (fallbackModel) {
+        activeModel = fallbackModel
+        onModelResolved?.(fallbackModel)
+        ;({ res, data, rawText } = await callOnce(activeModel))
+      }
+    }
+
+    if (!data) {
       throw new Error(`${providerLabel} retornou resposta inválida (${res.status}): ${rawText.slice(0, 140)}`)
     }
 
@@ -1133,7 +1209,7 @@ async function runAnthropicTurn(params: {
 
   let finalText = ''
   for (let round = 0; round < 8; round++) {
-    const res = await fetch(endpoint, {
+    const res = await fetchWithTimeout(endpoint, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -1207,61 +1283,80 @@ async function runAntigravityGeminiTurn(params: {
 }): Promise<{ replyText: string }> {
   const { cred, agent, world, ceoName, promptText, rootDir, actions } = params
   const client = new GoogleGenAI({ apiKey: cred.apiKey })
-  const modelToUse = cred.model || GEMINI_MODEL
   const systemInstruction = buildWorldAwareSystemPrompt(agent, world, ceoName)
 
-  let interaction = await client.interactions.create({
-    model: modelToUse,
-    input: promptText,
-    system_instruction: systemInstruction,
-    tools: AGENCY_TOOLS,
-    previous_interaction_id: agent.lastInteractionId,
-  })
+  const candidateModels = Array.from(
+    new Set([cred.model || GEMINI_MODEL, 'gemini-3.8-flash', 'gemini-2.5-flash', 'gemini-2.5-flash-lite'])
+  )
 
-  let rounds = 0
-  while (rounds < 8) {
-    const steps = Array.isArray(interaction.steps) ? interaction.steps : []
-    const functionCalls = steps.filter(
-      (step): step is { type: 'function_call'; id: string; name: string; arguments: Record<string, any> } =>
-        step.type === 'function_call'
-    )
+  let lastErr: any = null
+  for (const modelToUse of candidateModels) {
+    try {
+      let interaction = await client.interactions.create({
+        model: modelToUse,
+        input: promptText,
+        system_instruction: systemInstruction,
+        tools: AGENCY_TOOLS,
+        previous_interaction_id: agent.lastInteractionId,
+      })
 
-    if (functionCalls.length === 0) break
+      let rounds = 0
+      while (rounds < 8) {
+        const steps = Array.isArray(interaction.steps) ? interaction.steps : []
+        const functionCalls = steps.filter(
+          (step): step is { type: 'function_call'; id: string; name: string; arguments: Record<string, any> } =>
+            step.type === 'function_call'
+        )
 
-    const toolResults = functionCalls.map((call) => {
-      const outcome = executeAgentTool(call.name, call.arguments ?? {}, agent, world, rootDir)
-      if (outcome.actionBadge) {
-        actions.push(outcome.actionBadge)
+        if (functionCalls.length === 0) break
+
+        const toolResults = functionCalls.map((call) => {
+          const outcome = executeAgentTool(call.name, call.arguments ?? {}, agent, world, rootDir)
+          if (outcome.actionBadge) {
+            actions.push(outcome.actionBadge)
+          }
+          return {
+            type: 'function_result' as const,
+            call_id: call.id,
+            name: call.name,
+            result: outcome.summaryText,
+          }
+        })
+
+        interaction = await client.interactions.create({
+          model: modelToUse,
+          previous_interaction_id: interaction.id,
+          input: toolResults,
+          system_instruction: buildWorldAwareSystemPrompt(agent, world, ceoName),
+          tools: AGENCY_TOOLS,
+        })
+        rounds++
       }
-      return {
-        type: 'function_result' as const,
-        call_id: call.id,
-        name: call.name,
-        result: outcome.summaryText,
-      }
-    })
 
-    interaction = await client.interactions.create({
-      model: modelToUse,
-      previous_interaction_id: interaction.id,
-      input: toolResults,
-      system_instruction: buildWorldAwareSystemPrompt(agent, world, ceoName),
-      tools: AGENCY_TOOLS,
-    })
-    rounds++
+      const pendingCalls = (Array.isArray(interaction.steps) ? interaction.steps : []).some(
+        (step) => step.type === 'function_call'
+      )
+      agent.lastInteractionId = pendingCalls ? undefined : interaction.id
+      const replyText =
+        interaction.output_text?.trim() ||
+        (actions.length > 0
+          ? `Prontinho, ${ceoName}! Apliquei e salvei: ${actions.join(', ')}.`
+          : `Recebido, ${ceoName}! Estou acompanhando tudo aqui na Sede da Blequi.`)
+
+      return { replyText }
+    } catch (err: any) {
+      lastErr = err
+      agent.lastInteractionId = undefined
+      if (actions.length > 0) throw err
+      const msg = String(err?.message || '')
+      // Only try next Gemini model on quota/model-not-found/overload errors
+      if (!/429|503|404|rate limit|quota|not found|unavailable/i.test(msg)) {
+        throw err
+      }
+    }
   }
 
-  const pendingCalls = (Array.isArray(interaction.steps) ? interaction.steps : []).some(
-    (step) => step.type === 'function_call'
-  )
-  agent.lastInteractionId = pendingCalls ? undefined : interaction.id
-  const replyText =
-    interaction.output_text?.trim() ||
-    (actions.length > 0
-      ? `Prontinho, ${ceoName}! Apliquei e salvei: ${actions.join(', ')}.`
-      : `Recebido, ${ceoName}! Estou acompanhando tudo aqui na Sede da Blequi.`)
-
-  return { replyText }
+  throw lastErr || new Error('Nenhum modelo Gemini disponível.')
 }
 
 export async function runAgentConversationTurn(params: {
